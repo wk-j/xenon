@@ -47,17 +47,29 @@ article.doc th,article.doc td{border:1px solid var(--border);padding:6px 9px;tex
 article.doc blockquote{border:1px solid var(--border);border-radius:8px;
 background:rgba(112,122,138,.08);margin:1em 0;padding:.6em 1em;color:var(--muted)}
 article.doc img{max-width:100%;border-radius:8px}
-/* An artifact is a whole page in its own right, so it gets the whole viewport
-   minus this page's chrome — and the OUTER page stops scrolling, leaving exactly
-   one scrollbar instead of a frame bar nested inside a page bar. The iframe
-   cannot self-size: `sandbox="allow-scripts"` without `allow-same-origin` puts
-   it in an opaque origin, so this document cannot read its scrollHeight. That is
-   deliberate (see render_file) and is why the height is computed here. */
-:root{--artifact-chrome:264px}
-body:has(iframe.artifact){overflow:hidden}
-iframe.artifact{display:block;width:100%;
-height:max(420px,calc(100vh - var(--artifact-chrome)));
-border:1px solid var(--border);border-radius:10px;background:var(--bg)}
+/* An artifact opens in its own tab (see web.rs render_file), so there is no
+   frame to size and nothing nested to scroll. This is just the call to action. */
+/* Breadcrumbs: one click back to every level above the current page. The last
+   crumb is the page you are on, so it is text — a link to yourself looks live
+   and goes nowhere. */
+nav.crumbs{display:flex;flex-wrap:wrap;align-items:baseline;gap:7px;
+margin:0 0 18px;font:11px var(--mono);letter-spacing:.04em}
+nav.crumbs a{color:var(--muted)}
+nav.crumbs a:hover{color:var(--accent)}
+.crumbs__sep{color:var(--border)}
+.crumbs__here{color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+max-width:52ch}
+
+/* Move between revisions of the same resource without going back up first. */
+nav.revnav{display:flex;gap:16px;flex-wrap:wrap;margin:22px 0 0;padding-top:12px;
+border-top:1px solid var(--border);font:11px var(--mono);letter-spacing:.04em}
+
+header.top h1 a{color:var(--accent)}
+
+.artifact-open{margin:1.4em 0 .4em;font:14px var(--mono)}
+.artifact-open a{padding:9px 14px;border:1px solid var(--accent);border-radius:8px;
+display:inline-block;color:var(--accent)}
+.artifact-open a:hover{background:var(--accent);color:var(--bg)}
 form.auth{max-width:380px}
 form.auth label{display:block;font:10px/2 var(--mono);letter-spacing:.04em;color:var(--muted)}
 form.auth input,form.auth select{width:100%;background:var(--code-bg);color:var(--fg);

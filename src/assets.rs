@@ -149,7 +149,7 @@ mod tests {
         let css = ASSETS[index_of("app.css").unwrap()].body;
         for needed in [
             ":root{--bg:",
-            "iframe.artifact",
+            ".artifact-open",
             ".rv-finding",
             ".rv-steps",
             ".rv-chart",

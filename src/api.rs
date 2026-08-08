@@ -695,18 +695,29 @@ async fn list_resources(
     Ok(Json(rows))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct GetResourceQuery {
+    /// Pin to a specific sealed revision. Omitted means the head.
+    pub seq: Option<i64>,
+}
+
 async fn get_resource(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
+    Query(query): Query<GetResourceQuery>,
 ) -> AppResult<Json<ResourceDetail>> {
     let conn = state.db();
     let actor = auth::authenticate(&conn, &headers)?;
+    // `seq` used to be hardcoded to None here, so `?seq=1` was accepted and
+    // silently ignored — a caller asking for an old revision got the newest one
+    // and had no way to tell. The browse UI never hit it because it pins through
+    // the `/@N` path segment instead.
     Ok(Json(load_resource_detail(
         &conn,
         actor.as_ref(),
         &id,
-        None,
+        query.seq,
     )?))
 }
 
@@ -766,20 +777,35 @@ async fn get_file(
     drop(conn);
 
     let bytes = state.blobs.read(&sha256)?;
+
+    // An HTML artifact is a complete page in its own right — its own header, its
+    // own styling, its own scripts — so it is served as a top-level document and
+    // opened in its own tab, NOT embedded in a frame. Wrapping a whole page
+    // inside another page bought nothing but chrome inside chrome, a height it
+    // could not report, and nested scrollbars.
+    //
+    // Isolation comes from the CSP `sandbox` directive instead, which applies
+    // iframe-sandbox semantics to this response. Without `allow-same-origin` the
+    // document loads into an OPAQUE origin: its scripts run (so the artifact
+    // works as authored) but they cannot read this origin's cookies or storage,
+    // which is the only thing the frame was ever protecting. Same guarantee,
+    // none of the layout damage.
+    let csp = if content_type.contains("html") || path.ends_with(".html") {
+        "sandbox allow-scripts; base-uri 'none'; form-action 'none'"
+    } else {
+        "default-src 'none'; style-src 'unsafe-inline'; img-src data:"
+    };
     Ok((
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, content_type),
             // Uploaded bytes are untrusted content authored by an agent. Never
-            // let the browser sniff a type, execute it inline, or leak the
+            // let the browser sniff a type, reach this origin, or leak the
             // referrer onward.
             (header::CACHE_CONTROL, "no-store".to_string()),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
             (header::REFERRER_POLICY, "no-referrer".to_string()),
-            (
-                header::CONTENT_SECURITY_POLICY,
-                "default-src 'none'; style-src 'unsafe-inline'; img-src data:".to_string(),
-            ),
+            (header::CONTENT_SECURITY_POLICY, csp.to_string()),
         ],
         bytes,
     )

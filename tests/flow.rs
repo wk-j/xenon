@@ -101,6 +101,28 @@ impl Server {
         (status, String::from_utf8_lossy(&bytes).to_string())
     }
 
+    /// Raw body plus the Content-Security-Policy header, for the file route.
+    async fn get_file_with_csp(&self, path: &str, token: &str) -> (StatusCode, String, String) {
+        let req = Request::get(path).header(header::AUTHORIZATION, format!("Bearer {token}"));
+        let response = self
+            .app
+            .clone()
+            .oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let csp = response
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let bytes = axum::body::to_bytes(response.into_body(), 8 * 1024 * 1024)
+            .await
+            .unwrap();
+        (status, csp, String::from_utf8_lossy(&bytes).to_string())
+    }
+
     async fn put_blob(&self, digest: &str, auth: &str, bytes: &[u8]) -> Res {
         let mut req = Request::put(format!("/v1/blobs/{digest}"));
         req = apply_auth(req, Some(auth));
@@ -1037,10 +1059,17 @@ async fn browse_pages_render_and_escape_untrusted_titles() {
     )
     .unwrap();
 
-    assert!(html.contains("&lt;img src=x"), "the title must be escaped");
+    // askama emits numeric entities (`&#60;`) where the old hand-rolled escaper
+    // emitted named ones (`&lt;`). Both are correct, so assert on the property
+    // that matters — the tag must not survive as markup — rather than on which
+    // escaper produced it.
     assert!(
         !html.contains("<img src=x onerror"),
-        "unescaped title would be an XSS sink"
+        "unescaped title would be an XSS sink: {html}"
+    );
+    assert!(
+        html.contains("&#60;img src=x") || html.contains("&lt;img src=x"),
+        "the title must be escaped: {html}"
     );
     assert!(
         html.contains("<h1>heading</h1>"),
@@ -1164,4 +1193,293 @@ async fn pages_link_external_assets_and_carry_no_inline_script() {
 
     let (missing, _) = server.get_html("/assets/nope.css", None).await;
     assert_eq!(missing, StatusCode::NOT_FOUND);
+}
+
+/// The project list renders from `templates/index.html`, and askama escapes the
+/// values it interpolates. Guards the move off `format!`-built HTML.
+#[tokio::test]
+async fn the_project_list_renders_from_a_template_and_escapes_slugs() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(&session, json!(["resource:write", "resource:read"]))
+        .await;
+
+    let (_, empty) = server.get_html("/", Some(&session)).await;
+    assert!(
+        empty.contains("no projects yet"),
+        "signed-in empty state: {empty}"
+    );
+
+    // A project slug is agent-derived, so it is exactly the kind of value that
+    // must not reach the page as live markup.
+    server
+        .post(
+            "/v1/projects/wk-j.krypton/resources:inline",
+            Some(&token),
+            json!({
+                "kind": "doc",
+                "slug": "docs/a.md",
+                "title": "a",
+                "contents": [],
+            }),
+        )
+        .await;
+
+    let (status, html) = server.get_html("/", Some(&session)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("href=\"/p/wk-j.krypton\""), "{html}");
+    assert!(html.contains("1 resource ·"), "singular, not '1 resources'");
+    assert!(html.contains("private"));
+    assert!(!html.contains("no projects yet"));
+}
+
+/// An HTML artifact is served as its own sandboxed top-level document and linked
+/// from the resource page — not embedded. The isolation that used to come from
+/// the iframe now comes from the CSP `sandbox` header, so the artifact's own
+/// scripts run while still being unable to reach this origin.
+#[tokio::test]
+async fn html_artifacts_are_sandboxed_documents_opened_in_their_own_tab() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(&session, json!(["resource:write", "resource:read"]))
+        .await;
+
+    let artifact = "<html><head><title>t</title></head><body>\
+                    <script>document.title='ran'</script>hi</body></html>";
+    let res = server
+        .post(
+            "/v1/projects/krypton/resources:inline",
+            Some(&token),
+            json!({
+                "kind": "artifact",
+                "slug": "hm-1/Claude-1/art-1",
+                "title": "t",
+                "contents": [
+                    { "path": "artifact.html",
+                      "content_base64": data_encoding::BASE64.encode(artifact.as_bytes()),
+                      "content_type": "text/html" },
+                    { "path": "note.txt",
+                      "content_base64": data_encoding::BASE64.encode(b"plain"),
+                      "content_type": "text/plain" }
+                ],
+            }),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::CREATED, "{:?}", res.body);
+
+    let detail = server
+        .get(
+            &format!("/v1/resources/{}", res.s("resource_id")),
+            Some(&token),
+        )
+        .await;
+    let rev = detail.body["revision"]["id"].as_str().unwrap().to_string();
+
+    // The HTML file is sandboxed into an opaque origin, and its bytes are its own.
+    let (status, csp, body) = server
+        .get_file_with_csp(&format!("/v1/revisions/{rev}/files/artifact.html"), &token)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        csp.contains("sandbox allow-scripts"),
+        "not sandboxed: {csp}"
+    );
+    assert!(
+        !csp.contains("allow-same-origin"),
+        "same-origin would defeat the whole point: {csp}"
+    );
+    assert!(csp.contains("form-action 'none'"), "{csp}");
+    assert_eq!(
+        body, artifact,
+        "the artifact's bytes must be served verbatim"
+    );
+
+    // A non-HTML file keeps the strict policy and gains no script capability.
+    let (_, csp, body) = server
+        .get_file_with_csp(&format!("/v1/revisions/{rev}/files/note.txt"), &token)
+        .await;
+    assert_eq!(body, "plain");
+    assert!(csp.contains("default-src 'none'"), "{csp}");
+    assert!(
+        !csp.contains("sandbox"),
+        "only HTML needs sandboxing: {csp}"
+    );
+
+    // The resource page links out instead of embedding.
+    let (status, page) = server
+        .get_html("/r/krypton/artifact/hm-1/Claude-1/art-1", Some(&session))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(page.contains("open artifact"), "{page}");
+    assert!(page.contains("target=\"_blank\""));
+    assert!(page.contains("rel=\"noopener noreferrer\""));
+    assert!(
+        !page.contains("<iframe"),
+        "nothing should be embedded: {page}"
+    );
+}
+
+/// Every page below the root offers one click back to each level above it, and
+/// the current page is text rather than a link to itself.
+#[tokio::test]
+async fn deep_pages_carry_a_breadcrumb_trail_back_to_the_root() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(&session, json!(["resource:write", "resource:read"]))
+        .await;
+
+    server
+        .post(
+            "/v1/projects/krypton/resources:inline",
+            Some(&token),
+            json!({
+                "kind": "review",
+                "slug": "2026-08-08-a",
+                "title": "a board",
+                "contents": [{
+                    "path": "review.md",
+                    "content_base64": data_encoding::BASE64.encode(b"# a board\n"),
+                    "content_type": "text/markdown",
+                }],
+            }),
+        )
+        .await;
+
+    // The root has nowhere to go up to, so it shows no trail at all.
+    let (_, root) = server.get_html("/", Some(&session)).await;
+    assert!(!root.contains("nav class=\"crumbs\""), "{root}");
+
+    // A project links back to the project list.
+    let (_, project) = server.get_html("/p/krypton", Some(&session)).await;
+    assert!(project.contains("<a href=\"/\">projects</a>"), "{project}");
+    assert!(
+        project.contains("crumbs__here\" aria-current=\"page\">krypton"),
+        "the current page must not link to itself: {project}"
+    );
+
+    // A resource links back to both levels above it.
+    let (_, resource) = server
+        .get_html("/r/krypton/review/2026-08-08-a", Some(&session))
+        .await;
+    assert!(
+        resource.contains("<a href=\"/\">projects</a>"),
+        "{resource}"
+    );
+    assert!(
+        resource.contains("<a href=\"/p/krypton\">krypton</a>"),
+        "missing the project crumb: {resource}"
+    );
+    assert!(resource.contains("crumbs__here"), "{resource}");
+}
+
+/// Pushing new content for a slug that already exists must never overwrite what
+/// is on the server: it appends a revision. The previous one stays sealed,
+/// addressable, and byte-identical, and its blob is untouched.
+#[tokio::test]
+async fn a_second_push_appends_a_revision_and_leaves_the_first_intact() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(&session, json!(["resource:write", "resource:read"]))
+        .await;
+
+    async fn push(server: &Server, token: &str, body: &str, title: &str) -> Res {
+        server
+            .post(
+                "/v1/projects/krypton/resources:inline",
+                Some(token),
+                json!({
+                    "kind": "artifact",
+                    "slug": "hm-1/Claude-1/art-9",
+                    "title": title,
+                    "contents": [{
+                        "path": "artifact.html",
+                        "content_base64": data_encoding::BASE64.encode(body.as_bytes()),
+                        "content_type": "text/html",
+                    }],
+                }),
+            )
+            .await
+    }
+
+    const V1: &str = "<html><body>version one</body></html>";
+    const V2: &str = "<html><body>version two</body></html>";
+
+    let first = push(&server, &token, V1, "v1").await;
+    assert_eq!(first.status, StatusCode::CREATED, "{:?}", first.body);
+    assert_eq!(first.body["seq"].as_i64().unwrap(), 1);
+    let resource_id = first.s("resource_id");
+
+    let second = push(&server, &token, V2, "v2").await;
+    assert_eq!(second.status, StatusCode::CREATED, "{:?}", second.body);
+    assert_eq!(
+        second.body["seq"].as_i64().unwrap(),
+        2,
+        "a changed push must append, not replace"
+    );
+    assert_eq!(
+        second.s("resource_id"),
+        resource_id,
+        "it is the same resource, not a new one"
+    );
+
+    // Both revisions are listed, newest first.
+    let revs = server
+        .get(
+            &format!("/v1/resources/{resource_id}/revisions"),
+            Some(&token),
+        )
+        .await;
+    // The route returns a bare array, not an object wrapper.
+    let seqs: Vec<i64> = revs
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["seq"].as_i64().unwrap())
+        .collect();
+    assert_eq!(seqs, vec![2, 1], "history must keep both: {:?}", revs.body);
+
+    // The head serves v2 …
+    let head = server
+        .get(&format!("/v1/resources/{resource_id}"), Some(&token))
+        .await;
+    let head_rev = head.body["revision"]["id"].as_str().unwrap().to_string();
+    let (_, _, body) = server
+        .get_file_with_csp(
+            &format!("/v1/revisions/{head_rev}/files/artifact.html"),
+            &token,
+        )
+        .await;
+    assert_eq!(body, V2);
+
+    // … and revision 1 is still there, unchanged, addressable by its own id.
+    let pinned = server
+        .get(&format!("/v1/resources/{resource_id}?seq=1"), Some(&token))
+        .await;
+    let old_rev = pinned.body["revision"]["id"].as_str().unwrap().to_string();
+    assert_ne!(old_rev, head_rev);
+    let (status, _, old_body) = server
+        .get_file_with_csp(
+            &format!("/v1/revisions/{old_rev}/files/artifact.html"),
+            &token,
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the old revision must still resolve"
+    );
+    assert_eq!(old_body, V1, "the first version must be byte-identical");
+
+    // Re-pushing v2 unchanged adds nothing at all.
+    let again = push(&server, &token, V2, "v2").await;
+    assert_eq!(
+        again.body["seq"].as_i64().unwrap(),
+        2,
+        "no phantom revision"
+    );
 }
