@@ -7,6 +7,7 @@
 #
 #   scripts/dev.sh              # debug build on :8787
 #   scripts/dev.sh --release    # optimized build
+#   scripts/dev.sh --watch      # rebuild and restart on every save (cargo-watch)
 #   scripts/dev.sh --reset      # wipe the database and blobs first
 #   PORT=9000 scripts/dev.sh    # different port
 #
@@ -22,11 +23,13 @@ DATA_DIR="${XENON_DATA_DIR:-./data}"
 PORT="${PORT:-${XENON_PORT:-8787}}"
 CARGO_ARGS=""
 RESET=0
+WATCH=0
 
 for arg in "$@"; do
     case "$arg" in
         --release) CARGO_ARGS="--release" ;;
         --reset) RESET=1 ;;
+        --watch) WATCH=1 ;;
         -h | --help)
             # Print the header comment, stopping at the first line of code so
             # this cannot drift as the script grows.
@@ -79,6 +82,22 @@ if [ ! -f "$DATA_DIR/xenon.db" ]; then
     echo
 else
     echo "  http://localhost:$PORT/"
+fi
+
+# `cargo watch -x run` on its own starts a bare `cargo run` with none of the
+# environment above, which is why it dies on the missing session secret. Launch
+# it from here instead, so the secret, data dir, port and cookie flag are
+# already exported into the watched process.
+if [ "$WATCH" -eq 1 ]; then
+    if ! command -v cargo-watch > /dev/null 2>&1; then
+        echo "cargo-watch is not installed: cargo install cargo-watch" >&2
+        exit 127
+    fi
+    echo "  watching src/, templates/ and assets/ — save to rebuild"
+    echo
+    # askama and include_str! both register their files as build inputs, so a
+    # template or stylesheet edit triggers a rebuild without listing them here.
+    exec cargo watch -x "run $CARGO_ARGS"
 fi
 
 exec cargo run $CARGO_ARGS
