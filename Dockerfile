@@ -21,6 +21,7 @@ COPY src ./src
 # present at compile time. Without this COPY the build fails here rather than at
 # runtime — which is the right place, but only if the directory is copied at all.
 COPY assets ./assets
+COPY templates ./templates
 RUN touch src/main.rs src/lib.rs && cargo build --release
 
 

@@ -20,6 +20,128 @@ use crate::auth::{self, Actor};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
+// ─── templates ──────────────────────────────────────────────────────────────
+//
+// HTML lives in `templates/*.html`, not in this file. askama compiles each one
+// into a checked Rust struct, so a typo in a field name is a build error rather
+// than a blank spot in a rendered page, and every `{{ … }}` is escaped by
+// default. `escape()` survives only for the few places that still hand-build a
+// string.
+
+#[derive(askama::Template)]
+#[template(path = "index.html")]
+struct IndexTemplate {
+    title: String,
+    css_url: String,
+    app_js_url: String,
+    crumbs: Vec<Crumb>,
+    signed_in: bool,
+    projects: Vec<ProjectCard>,
+}
+
+/// One step of the breadcrumb. `href` is `None` for the current page — a link
+/// to yourself looks live and goes nowhere.
+#[derive(askama::Template)]
+#[template(path = "login.html")]
+struct LoginTemplate {
+    title: String,
+    css_url: String,
+    app_js_url: String,
+    page_js_url: String,
+    crumbs: Vec<Crumb>,
+}
+
+#[derive(askama::Template)]
+#[template(path = "register.html")]
+struct RegisterTemplate {
+    title: String,
+    css_url: String,
+    app_js_url: String,
+    page_js_url: String,
+    crumbs: Vec<Crumb>,
+}
+
+#[derive(askama::Template)]
+#[template(path = "tokens.html")]
+struct TokensTemplate {
+    title: String,
+    css_url: String,
+    app_js_url: String,
+    page_js_url: String,
+    crumbs: Vec<Crumb>,
+}
+
+struct Crumb {
+    label: String,
+    href: Option<String>,
+}
+
+#[derive(askama::Template)]
+#[template(path = "project.html")]
+struct ProjectTemplate {
+    title: String,
+    css_url: String,
+    app_js_url: String,
+    crumbs: Vec<Crumb>,
+    project: String,
+    kinds: &'static [&'static str],
+    kind_filter: Option<String>,
+    resources: Vec<ResourceCard>,
+}
+
+struct ResourceCard {
+    kind: String,
+    slug: String,
+    title: String,
+    revisions: i64,
+    updated_at: i64,
+}
+
+#[derive(askama::Template)]
+#[template(path = "resource.html")]
+struct ResourceTemplate {
+    title: String,
+    css_url: String,
+    app_js_url: String,
+    crumbs: Vec<Crumb>,
+    project: String,
+    kind: String,
+    slug: String,
+    seq: i64,
+    revisions: i64,
+    pinned: bool,
+    files: Vec<FileTab>,
+    content: String,
+}
+
+struct FileTab {
+    path: String,
+    href: String,
+    selected: bool,
+}
+
+struct ProjectCard {
+    slug: String,
+    is_public: bool,
+    resource_count: i64,
+}
+
+/// The two asset URLs every page needs. Kept in one place so a template cannot
+/// be added without them.
+fn chrome(title: &str) -> (String, String, String) {
+    (
+        title.to_string(),
+        assets::url("app.css"),
+        assets::url("app.js"),
+    )
+}
+
+fn render<T: askama::Template>(t: &T) -> AppResult<Html<String>> {
+    t.render()
+        .map(Html)
+        .map_err(|e| AppError::internal(format!("render template: {e}")))
+}
+
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(index))
@@ -28,46 +150,6 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/settings/tokens", get(tokens_page))
         .route("/p/{project}", get(project_page))
         .route("/r/{project}/{kind}/{*slug}", get(resource_page))
-}
-
-/// Every page is rendered through here. `page_script` names an asset in
-/// `assets/` (not inline source) so the browse UI has no inline `<script>` left
-/// — which is what makes a real Content-Security-Policy possible later.
-fn shell(title: &str, body: &str) -> Html<String> {
-    shell_with(title, body, None)
-}
-
-fn shell_with(title: &str, body: &str, page_script: Option<&str>) -> Html<String> {
-    Html(format!(
-        r#"<!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="referrer" content="no-referrer">
-<title>{title} · xenon</title>
-<link rel="stylesheet" href="{css}">
-<script src="{app_js}" defer></script>{page_script}
-</head><body><div class="wrap">
-<header class="top"><h1>xenon</h1>
-<nav>
-  <a href="/">projects</a>
-  <a href="/settings/tokens">tokens</a>
-  <a href="/login">sign in</a>
-</nav></header>
-{body}
-</div></body></html>"#,
-        title = escape(title),
-        css = assets::url("app.css"),
-        app_js = assets::url("app.js"),
-        page_script = script_tag(page_script),
-    ))
-}
-
-fn script_tag(page_script: Option<&str>) -> String {
-    match page_script {
-        Some(name) => format!("\n<script src=\"{}\" defer></script>", assets::url(name)),
-        None => String::new(),
-    }
 }
 
 pub fn escape(raw: &str) -> String {
@@ -116,30 +198,22 @@ async fn index(
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
-    let body = if rows.is_empty() {
-        let hint = if actor.is_some() {
-            "no projects yet — push one from krypton with #push"
-        } else {
-            "no public projects — sign in to see your own"
-        };
-        format!("<p class=\"empty\">{hint}</p>")
-    } else {
-        let cards = rows
-            .iter()
-            .map(|(slug, is_public, count)| {
-                format!(
-                    r#"<div class="card"><h3><a href="/p/{slug_attr}">{slug}</a></h3>
-<div class="meta">{count} resource{plural} · {visibility}</div></div>"#,
-                    slug_attr = escape(slug),
-                    slug = escape(slug),
-                    plural = if *count == 1 { "" } else { "s" },
-                    visibility = if *is_public { "public" } else { "private" },
-                )
+    let (title, css_url, app_js_url) = chrome("projects");
+    render(&IndexTemplate {
+        title,
+        css_url,
+        app_js_url,
+        crumbs: Vec::new(),
+        signed_in: actor.is_some(),
+        projects: rows
+            .into_iter()
+            .map(|(slug, is_public, resource_count)| ProjectCard {
+                slug,
+                is_public,
+                resource_count,
             })
-            .collect::<String>();
-        format!("<div class=\"grid\">{cards}</div>")
-    };
-    Ok(shell("projects", &body))
+            .collect(),
+    })
 }
 
 #[derive(Deserialize)]
@@ -178,46 +252,35 @@ async fn project_page(
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
-    let mut tabs = format!(
-        "<a href=\"/p/{p}\" class=\"{on}\">all</a>",
-        p = escape(&project),
-        on = if kind_filter.is_none() { "on" } else { "" }
-    );
-    for kind in RESOURCE_KINDS {
-        tabs.push_str(&format!(
-            "<a href=\"/p/{p}?kind={kind}\" class=\"{on}\">{kind}</a>",
-            p = escape(&project),
-            on = if kind_filter == Some(kind) { "on" } else { "" }
-        ));
-    }
-
-    let list = if rows.is_empty() {
-        "<p class=\"empty\">nothing published here yet</p>".to_string()
-    } else {
-        let cards = rows
-            .iter()
-            .map(|(kind, slug, title, updated, revisions)| {
-                format!(
-                    r#"<div class="card"><h3><a href="/r/{p}/{kind}/{slug_attr}">{title}</a></h3>
-<div class="meta"><span class="pill k">{kind}</span> {slug} · {revisions} rev · updated {updated}</div></div>"#,
-                    p = escape(&project),
-                    kind = escape(kind),
-                    slug_attr = escape(slug),
-                    slug = escape(slug),
-                    title = escape(title),
-                    revisions = revisions,
-                    updated = updated,
-                )
+    let (title, css_url, app_js_url) = chrome(&project);
+    render(&ProjectTemplate {
+        title,
+        css_url,
+        app_js_url,
+        crumbs: vec![
+            Crumb {
+                label: "projects".to_string(),
+                href: Some("/".to_string()),
+            },
+            Crumb {
+                label: project.clone(),
+                href: None,
+            },
+        ],
+        project: project.clone(),
+        kinds: &RESOURCE_KINDS,
+        kind_filter: kind_filter.map(|k| k.to_string()),
+        resources: rows
+            .into_iter()
+            .map(|(kind, slug, title, updated_at, revisions)| ResourceCard {
+                kind,
+                slug,
+                title,
+                revisions,
+                updated_at,
             })
-            .collect::<String>();
-        format!("<div class=\"grid\">{cards}</div>")
-    };
-
-    let body = format!(
-        "<h2 class=\"meta\">{}</h2><div class=\"kinds\">{tabs}</div>{list}",
-        escape(&project)
-    );
-    Ok(shell(&project, &body))
+            .collect(),
+    })
 }
 
 #[derive(Deserialize)]
@@ -258,11 +321,37 @@ async fn resource_page(
     let detail = load_resource_detail(&conn, actor.as_ref(), &resource_id, seq)?;
     drop(conn);
 
+    let crumbs = vec![
+        Crumb {
+            label: "projects".to_string(),
+            href: Some("/".to_string()),
+        },
+        Crumb {
+            label: project.clone(),
+            href: Some(format!("/p/{}", urlencode(&project))),
+        },
+        Crumb {
+            label: detail.summary.title.clone(),
+            href: None,
+        },
+    ];
+    let (title, css_url, app_js_url) = chrome(&detail.summary.title);
+
     let Some(revision) = detail.revision else {
-        return Ok(shell(
-            &detail.summary.title,
-            "<p class=\"empty\">no committed revision</p>",
-        ));
+        return render(&ResourceTemplate {
+            title,
+            css_url,
+            app_js_url,
+            crumbs,
+            project,
+            kind: detail.summary.kind,
+            slug: detail.summary.slug,
+            seq: 0,
+            revisions: 0,
+            pinned: false,
+            files: Vec::new(),
+            content: "<p class=\"empty\">no committed revision</p>".to_string(),
+        });
     };
 
     let selected = query
@@ -271,48 +360,35 @@ async fn resource_page(
         .and_then(|want| revision.files.iter().find(|f| f.path == want))
         .or_else(|| revision.files.first());
 
-    let strip = if revision.files.len() > 1 {
-        let items = revision
-            .files
-            .iter()
-            .map(|f| {
-                format!(
-                    "<li><a class=\"{on}\" href=\"?file={path_attr}\">{path}</a></li>",
-                    on = if selected.is_some_and(|s| s.path == f.path) {
-                        "on"
-                    } else {
-                        ""
-                    },
-                    path_attr = escape(&urlencode(&f.path)),
-                    path = escape(&f.path),
-                )
-            })
-            .collect::<String>();
-        format!("<ul class=\"files\">{items}</ul>")
-    } else {
-        String::new()
-    };
-
     let content = match selected {
         None => "<p class=\"empty\">this revision has no files</p>".to_string(),
         Some(file) => render_file(&state, &revision.id, &file.path, &file.content_type)?,
     };
 
-    let meta_line = format!(
-        "<div class=\"meta\"><span class=\"pill k\">{kind}</span> {slug} · revision {seq} of {total}{pinned}</div>",
-        kind = escape(&detail.summary.kind),
-        slug = escape(&detail.summary.slug),
-        seq = revision.seq,
-        total = detail.summary.revisions,
-        pinned = if seq.is_some() { " · pinned" } else { "" },
-    );
+    let files = revision
+        .files
+        .iter()
+        .map(|f| FileTab {
+            path: f.path.clone(),
+            href: urlencode(&f.path),
+            selected: selected.is_some_and(|s| s.path == f.path),
+        })
+        .collect();
 
-    let body = format!(
-        "<p class=\"meta\"><a href=\"/p/{p}\">{p}</a></p><h2>{title}</h2>{meta_line}<div style=\"height:14px\"></div>{strip}{content}",
-        p = escape(&project),
-        title = escape(&detail.summary.title),
-    );
-    Ok(shell(&detail.summary.title, &body))
+    render(&ResourceTemplate {
+        title,
+        css_url,
+        app_js_url,
+        crumbs,
+        project,
+        kind: detail.summary.kind,
+        slug: detail.summary.slug,
+        seq: revision.seq,
+        revisions: detail.summary.revisions,
+        pinned: seq.is_some(),
+        files,
+        content,
+    })
 }
 
 fn render_file(
@@ -323,11 +399,15 @@ fn render_file(
 ) -> AppResult<String> {
     let src = format!("/v1/revisions/{}/files/{}", revision_id, urlencode(path));
 
-    // HTML artifacts are agent-authored and must never run with this origin's
-    // authority — they are framed sandboxed, with no same-origin token.
+    // An HTML artifact opens in its own tab rather than being embedded. It is a
+    // complete page, and nesting one page inside another only produced chrome
+    // inside chrome and a frame whose height this page could not know. Isolation
+    // is carried by the CSP `sandbox` header on the file route (see api.rs
+    // `get_file`), so the artifact still cannot reach this origin's cookies.
     if content_type.contains("html") || path.ends_with(".html") {
         return Ok(format!(
-            "<iframe class=\"artifact\" sandbox=\"allow-scripts\" referrerpolicy=\"no-referrer\" src=\"{}\"></iframe>",
+            "<p class=\"artifact-open\"><a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">open artifact \u{2197}</a></p>\
+             <p class=\"meta\">opens in a new tab, sandboxed — it cannot read your session</p>",
             escape(&src)
         ));
     }
@@ -397,73 +477,37 @@ fn urlencode(raw: &str) -> String {
 
 // ------------------------------------------------------------- auth screens
 
-async fn login_page() -> Html<String> {
-    shell_with(
-        "sign in",
-        r#"<h2>sign in</h2>
-<form class="auth" id="f">
-  <label for="email">email</label><input id="email" type="email" autocomplete="username" required>
-  <label for="password">password</label>
-  <input id="password" type="password" autocomplete="current-password" required>
-  <button type="submit">sign in</button>
-  <p class="msg" id="m"></p>
-  <p class="meta">no account yet? <a href="/register">register</a></p>
-</form>
-"#,
-        Some("login.js"),
-    )
+async fn login_page() -> AppResult<Html<String>> {
+    let (title, css_url, app_js_url) = chrome("sign in");
+    render(&LoginTemplate {
+        title,
+        css_url,
+        app_js_url,
+        page_js_url: assets::url("login.js"),
+        crumbs: Vec::new(),
+    })
 }
 
-async fn register_page() -> Html<String> {
-    shell_with(
-        "register",
-        r#"<h2>register</h2>
-<p class="meta">the first account on a fresh instance becomes the admin and needs no invite.</p>
-<form class="auth" id="f">
-  <label for="email">email</label><input id="email" type="email" autocomplete="username" required>
-  <label for="display_name">display name</label><input id="display_name" type="text">
-  <label for="password">password (12+ characters)</label>
-  <input id="password" type="password" autocomplete="new-password" minlength="12" required>
-  <label for="invite">invite code (leave blank if you are the first user)</label>
-  <input id="invite" type="text">
-  <button type="submit">create account</button>
-  <p class="msg" id="m"></p>
-</form>
-"#,
-        Some("register.js"),
-    )
+async fn register_page() -> AppResult<Html<String>> {
+    let (title, css_url, app_js_url) = chrome("register");
+    render(&RegisterTemplate {
+        title,
+        css_url,
+        app_js_url,
+        page_js_url: assets::url("register.js"),
+        crumbs: Vec::new(),
+    })
 }
 
-async fn tokens_page() -> Html<String> {
-    shell_with(
-        "tokens",
-        r#"<h2>api tokens</h2>
-<p class="meta">mint one token per client. the secret is shown once, here, and never again —
-copy it straight into krypton or your integration.</p>
-<form class="auth" id="f">
-  <label for="label">label</label>
-  <input id="label" type="text" placeholder="krypton on this laptop" required>
-  <label>scopes</label>
-  <div class="scopes">
-    <label><input type="checkbox" value="resource:write" checked> resource:write</label>
-    <label><input type="checkbox" value="resource:read" checked> resource:read</label>
-    <label><input type="checkbox" value="project:admin"> project:admin</label>
-  </div>
-  <label for="project">restrict to project (optional)</label>
-  <input id="project" type="text" placeholder="all of your projects">
-  <label for="days">expires in days (optional)</label><input id="days" type="number" min="1">
-  <button type="submit">create token</button>
-  <p class="msg" id="m"></p>
-</form>
-<div id="secret"></div>
-<h3 class="meta">active tokens</h3>
-<table class="data"><thead><tr>
-<th>id</th><th>label</th><th>scopes</th><th>project</th><th>last used</th><th></th>
-</tr></thead><tbody id="rows"></tbody></table>
-<p class="empty" id="none" hidden>no active tokens</p>
-"#,
-        Some("tokens.js"),
-    )
+async fn tokens_page() -> AppResult<Html<String>> {
+    let (title, css_url, app_js_url) = chrome("tokens");
+    render(&TokensTemplate {
+        title,
+        css_url,
+        app_js_url,
+        page_js_url: assets::url("tokens.js"),
+        crumbs: Vec::new(),
+    })
 }
 
 /// Web pages answer an unauthenticated read with a redirect to sign-in rather

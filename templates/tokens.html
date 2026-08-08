@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block page_script %}
+<script src="{{ page_js_url }}" defer></script>
+{% endblock %}
+
+{% block content %}
+<h2>api tokens</h2>
+<p class="meta">mint one token per client. the secret is shown once, here, and never again —
+copy it straight into krypton or your integration.</p>
+<form class="auth" id="f">
+  <label for="label">label</label>
+  <input id="label" type="text" placeholder="krypton on this laptop" required>
+  <label>scopes</label>
+  <div class="scopes">
+    <label><input type="checkbox" value="resource:write" checked> resource:write</label>
+    <label><input type="checkbox" value="resource:read" checked> resource:read</label>
+    <label><input type="checkbox" value="project:admin"> project:admin</label>
+  </div>
+  <label for="project">restrict to project (optional)</label>
+  <input id="project" type="text" placeholder="all of your projects">
+  <label for="days">expires in days (optional)</label><input id="days" type="number" min="1">
+  <button type="submit">create token</button>
+  <p class="msg" id="m"></p>
+</form>
+<div id="secret"></div>
+<h3 class="meta">active tokens</h3>
+<table class="data"><thead><tr>
+<th>id</th><th>label</th><th>scopes</th><th>project</th><th>last used</th><th></th>
+</tr></thead><tbody id="rows"></tbody></table>
+<p class="empty" id="none" hidden>no active tokens</p>
+{% endblock %}

@@ -1,0 +1,49 @@
+{#- The shared page frame. Every page extends this, so the chrome exists once.
+
+     askama escapes `{{ … }}` by default, which is the point of moving here from
+     `format!`: a title or a project slug an agent chose can no longer reach the
+     page unescaped because someone forgot a call. Anything already-safe says so
+     with `|safe`, and each use is justified where it appears.
+
+     CSS and JS are separate files under `assets/`; nothing is inlined, which is
+     what keeps a Content-Security-Policy writable. -#}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>{{ title }} · xenon</title>
+<link rel="stylesheet" href="{{ css_url }}">
+<script src="{{ app_js_url }}" defer></script>
+{%- block page_script %}{% endblock %}
+</head>
+<body>
+<div class="wrap">
+<header class="top">
+  <h1><a href="/">xenon</a></h1>
+  <nav>
+    <a href="/">projects</a>
+    <a href="/settings/tokens">tokens</a>
+    <a href="/login">sign in</a>
+  </nav>
+</header>
+{%- if !crumbs.is_empty() %}
+{#- Every page deeper than the root says where it is and offers one click back
+    to each level above it. The last crumb is the current page, so it is text,
+    not a link — a link to yourself is a dead end that looks live. -#}
+<nav class="crumbs" aria-label="breadcrumb">
+  {%- for c in crumbs %}
+  {%- if let Some(href) = c.href %}
+  <a href="{{ href }}">{{ c.label }}</a>
+  <span class="crumbs__sep" aria-hidden="true">/</span>
+  {%- else %}
+  <span class="crumbs__here" aria-current="page">{{ c.label }}</span>
+  {%- endif %}
+  {%- endfor %}
+</nav>
+{%- endif %}
+{% block content %}{% endblock %}
+</div>
+</body>
+</html>

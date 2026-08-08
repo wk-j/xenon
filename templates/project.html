@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2 class="meta">{{ project }}</h2>
+
+<div class="kinds">
+  <a href="/p/{{ project }}" class="{% if kind_filter.is_none() %}on{% endif %}">all</a>
+  {%- for k in kinds %}
+  <a href="/p/{{ project }}?kind={{ k }}"
+     class="{% if kind_filter.as_deref() == Some(k) %}on{% endif %}">{{ k }}</a>
+  {%- endfor %}
+</div>
+
+{% if resources.is_empty() %}
+<p class="empty">
+  {%- if kind_filter.is_some() -%}
+    nothing of that kind here yet
+  {%- else -%}
+    nothing published here yet
+  {%- endif -%}
+</p>
+{% else %}
+<div class="grid">
+  {%- for r in resources %}
+  <div class="card">
+    <h3><a href="/r/{{ project }}/{{ r.kind }}/{{ r.slug }}">{{ r.title }}</a></h3>
+    <div class="meta">
+      <span class="pill k">{{ r.kind }}</span>
+      {{ r.slug }} · {{ r.revisions }} rev · updated {{ r.updated_at }}
+    </div>
+  </div>
+  {%- endfor %}
+</div>
+{% endif %}
+{% endblock %}

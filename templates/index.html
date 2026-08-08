@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block content %}
+{% if projects.is_empty() %}
+<p class="empty">
+  {%- if signed_in -%}
+    no projects yet — push one from krypton with #push
+  {%- else -%}
+    no public projects — sign in to see your own
+  {%- endif -%}
+</p>
+{% else %}
+<div class="grid">
+  {% for p in projects %}
+  <div class="card">
+    <h3><a href="/p/{{ p.slug }}">{{ p.slug }}</a></h3>
+    <div class="meta">
+      {{ p.resource_count }} resource{{ p.resource_count|pluralize }} ·
+      {% if p.is_public %}public{% else %}private{% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

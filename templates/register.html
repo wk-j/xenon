@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block page_script %}
+<script src="{{ page_js_url }}" defer></script>
+{% endblock %}
+
+{% block content %}
+<h2>register</h2>
+<p class="meta">the first account on a fresh instance becomes the admin and needs no invite.</p>
+<form class="auth" id="f">
+  <label for="email">email</label><input id="email" type="email" autocomplete="username" required>
+  <label for="display_name">display name</label><input id="display_name" type="text">
+  <label for="password">password (12+ characters)</label>
+  <input id="password" type="password" autocomplete="new-password" minlength="12" required>
+  <label for="invite">invite code (leave blank if you are the first user)</label>
+  <input id="invite" type="text">
+  <button type="submit">create account</button>
+  <p class="msg" id="m"></p>
+</form>
+{% endblock %}

@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2>{{ title }}</h2>
+<div class="meta">
+  <span class="pill k">{{ kind }}</span>
+  {{ slug }} · revision {{ seq }} of {{ revisions }}{% if pinned %} · pinned{% endif %}
+</div>
+
+{%- if files.len() > 1 %}
+<ul class="files">
+  {%- for f in files %}
+  <li><a class="{% if f.selected %}on{% endif %}" href="?file={{ f.href }}">{{ f.path }}</a></li>
+  {%- endfor %}
+</ul>
+{%- endif %}
+
+{#- `content` is server-rendered HTML: comrak output with `unsafe_` off, put
+    through the typed-block post-pass (src/render.rs), or a link to a sandboxed
+    artifact. It is the ONE `|safe` on this page, and everything that reaches it
+    is escaped or refused upstream — agent bytes never arrive here raw. -#}
+{{ content|safe }}
+
+{%- if revisions > 1 %}
+<nav class="revnav">
+  {%- if seq > 1 %}
+  <a href="/r/{{ project }}/{{ kind }}/{{ slug }}/@{{ seq - 1 }}">← revision {{ seq - 1 }}</a>
+  {%- endif %}
+  {%- if seq < revisions %}
+  <a href="/r/{{ project }}/{{ kind }}/{{ slug }}/@{{ seq + 1 }}">revision {{ seq + 1 }} →</a>
+  {%- endif %}
+  {%- if pinned %}
+  <a href="/r/{{ project }}/{{ kind }}/{{ slug }}">latest</a>
+  {%- endif %}
+</nav>
+{%- endif %}
+{% endblock %}

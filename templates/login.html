@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% block page_script %}
+<script src="{{ page_js_url }}" defer></script>
+{% endblock %}
+
+{% block content %}
+<h2>sign in</h2>
+<form class="auth" id="f">
+  <label for="email">email</label><input id="email" type="email" autocomplete="username" required>
+  <label for="password">password</label>
+  <input id="password" type="password" autocomplete="current-password" required>
+  <button type="submit">sign in</button>
+  <p class="msg" id="m"></p>
+  <p class="meta">no account yet? <a href="/register">register</a></p>
+</form>
+{% endblock %}
