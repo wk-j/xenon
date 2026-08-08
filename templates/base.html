@@ -22,10 +22,20 @@
 <div class="wrap">
 <header class="top">
   <h1><a href="/">xenon</a></h1>
+  {#- The nav is the only chrome that changes with who is reading. It used to be
+      three static links, which offered "sign in" to someone already signed in
+      and a `tokens` link that bounced an anonymous reader straight back. -#}
   <nav>
     <a href="/">projects</a>
+    {%- if nav.signed_in %}
     <a href="/settings/tokens">tokens</a>
+    <span class="top__who">{{ nav.who }}</span>
+    {#- A form, not a link: `SameSite=Lax` keeps the session cookie off a
+        cross-site POST, so nobody else's page can sign this reader out. -#}
+    <form method="post" action="/logout"><button type="submit">sign out</button></form>
+    {%- else %}
     <a href="/login">sign in</a>
+    {%- endif %}
   </nav>
 </header>
 {%- if !crumbs.is_empty() %}

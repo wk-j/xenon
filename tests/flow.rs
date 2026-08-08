@@ -101,6 +101,34 @@ impl Server {
         (status, String::from_utf8_lossy(&bytes).to_string())
     }
 
+    /// A browse-UI form post. Unlike `post`, the interesting parts of the answer
+    /// are the redirect target and the cookie it clears, not a JSON body.
+    async fn post_web(&self, path: &str, session: Option<&str>) -> (StatusCode, String, String) {
+        let mut req = Request::post(path);
+        if let Some(session) = session {
+            req = req.header(header::COOKIE, format!("xenon_session={session}"));
+        }
+        let response = self
+            .app
+            .clone()
+            .oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let head = |name: header::HeaderName| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_string()
+        };
+        (
+            response.status(),
+            head(header::LOCATION),
+            head(header::SET_COOKIE),
+        )
+    }
+
     /// Raw body plus the Content-Security-Policy header, for the file route.
     async fn get_file_with_csp(&self, path: &str, token: &str) -> (StatusCode, String, String) {
         let req = Request::get(path).header(header::AUTHORIZATION, format!("Bearer {token}"));
@@ -1312,6 +1340,89 @@ async fn the_project_list_renders_from_a_template_and_escapes_slugs() {
     assert!(html.contains("1 resource ·"), "singular, not '1 resources'");
     assert!(html.contains("private"));
     assert!(!html.contains("no projects yet"));
+}
+
+/// The nav tells the reader who they are. It was static markup — every page
+/// offered "sign in" to a reader who was already signed in, and a `tokens` link
+/// that only bounced an anonymous one back to the login form.
+#[tokio::test]
+async fn the_nav_reflects_who_is_reading() {
+    let server = Server::start();
+    let session = server.register_first().await;
+
+    let (_, anonymous) = server.get_html("/", None).await;
+    assert!(
+        anonymous.contains("<a href=\"/login\">sign in</a>"),
+        "an anonymous reader needs the way in: {anonymous}"
+    );
+    assert!(
+        !anonymous.contains("/settings/tokens"),
+        "the tokens link only bounces an anonymous reader back: {anonymous}"
+    );
+    assert!(!anonymous.contains("sign out"), "{anonymous}");
+
+    // Every page carries the same chrome, so check one of each shape.
+    for path in ["/", "/login", "/settings/tokens"] {
+        let (status, html) = server.get_html(path, Some(&session)).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        assert!(
+            html.contains("action=\"/logout\""),
+            "{path} still offers no way out: {html}"
+        );
+        assert!(
+            !html.contains("<a href=\"/login\">sign in</a>"),
+            "{path} offers sign-in to someone already signed in: {html}"
+        );
+        // `wk@example.com` registers without a display name, so the nav shows
+        // the local part.
+        assert!(
+            html.contains("class=\"top__who\">wk<"),
+            "{path} does not say which account is signed in: {html}"
+        );
+    }
+}
+
+/// Signing out from the browse UI ends the session and lands on a page, not on
+/// the JSON body that `/v1/auth/logout` answers with.
+#[tokio::test]
+async fn the_browse_ui_can_sign_out() {
+    let server = Server::start();
+    let session = server.register_first().await;
+
+    let (status, location, cookie) = server.post_web("/logout", Some(&session)).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(location, "/");
+    assert!(
+        cookie.contains("xenon_session=;") && cookie.contains("Max-Age=0"),
+        "the cookie must be cleared, not just the row: {cookie}"
+    );
+
+    // The session row is gone, so a copy of the cookie value is dead too.
+    assert_eq!(
+        server
+            .get("/v1/me", Some(&session_header(&session)))
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    let (_, html) = server.get_html("/", Some(&session)).await;
+    assert!(html.contains("<a href=\"/login\">sign in</a>"), "{html}");
+}
+
+/// A private page decides authentication on the server. `/settings/tokens` used
+/// to render for anyone and let its script discover the 401 afterwards, which
+/// flashed an empty token table at a reader who was never going to see one.
+#[tokio::test]
+async fn the_tokens_page_redirects_an_anonymous_reader() {
+    let server = Server::start();
+    let session = server.register_first().await;
+
+    let (status, _) = server.get_html("/settings/tokens", None).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+
+    let (status, html) = server.get_html("/settings/tokens", Some(&session)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("api tokens"), "{html}");
 }
 
 /// An HTML artifact is served as its own sandboxed top-level document and linked

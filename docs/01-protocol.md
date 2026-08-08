@@ -167,7 +167,18 @@ agent-authored and untrusted.
 
 `/` projects · `/p/<project>` resources, filterable by kind ·
 `/r/<project>/<kind>/<slug>` the resource · `/r/<project>/<kind>/<slug>/@<seq>`
-a pinned revision · `/register` · `/login` · `/settings/tokens`.
+a pinned revision · `/register` · `/login` · `POST /logout` · `/settings/tokens`.
+
+`/settings/tokens` is the one private page: without a session it answers `303`
+to `/login` rather than rendering a shell its script would then have to empty.
+
+`POST /logout` is the browse UI's sign-out form. It ends the same session as
+`POST /v1/auth/logout` but answers `303` to `/`, since a form post that lands on
+`{"ok":true}` is not a page. Both are POST-only, so `SameSite=Lax` keeps the
+session cookie off a cross-site attempt to sign someone out.
+
+The chrome is drawn per reader: signed in, the nav shows the account, `tokens`,
+and `sign out`; anonymous, it shows `sign in` only.
 
 Markdown renders server-side with raw HTML disabled. HTML artifacts render in a
 `sandbox`ed iframe.

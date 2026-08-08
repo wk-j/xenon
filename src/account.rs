@@ -256,12 +256,9 @@ async fn login(
 }
 
 async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AppResult<Response> {
-    if let Some(value) = auth::read_cookie(&headers, auth::SESSION_COOKIE) {
+    {
         let conn = state.db();
-        conn.execute(
-            "DELETE FROM session WHERE id = ?1",
-            [sha256_hex(value.as_bytes())],
-        )?;
+        auth::end_session(&conn, &headers)?;
     }
     Ok((
         [(

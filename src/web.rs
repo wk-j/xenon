@@ -6,11 +6,11 @@
 // cards, no left-accent rails, and paths keep their own case.
 
 use axum::extract::{Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
-use rusqlite::OptionalExtension;
+use rusqlite::{Connection, OptionalExtension};
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -35,7 +35,7 @@ struct IndexTemplate {
     css_url: String,
     app_js_url: String,
     crumbs: Vec<Crumb>,
-    signed_in: bool,
+    nav: Nav,
     projects: Vec<ProjectCard>,
 }
 
@@ -49,6 +49,7 @@ struct LoginTemplate {
     app_js_url: String,
     page_js_url: String,
     crumbs: Vec<Crumb>,
+    nav: Nav,
 }
 
 #[derive(askama::Template)]
@@ -59,6 +60,7 @@ struct RegisterTemplate {
     app_js_url: String,
     page_js_url: String,
     crumbs: Vec<Crumb>,
+    nav: Nav,
 }
 
 #[derive(askama::Template)]
@@ -69,11 +71,22 @@ struct TokensTemplate {
     app_js_url: String,
     page_js_url: String,
     crumbs: Vec<Crumb>,
+    nav: Nav,
 }
 
 struct Crumb {
     label: String,
     href: Option<String>,
+}
+
+/// Who the chrome is being drawn for. Every page carries one, because the nav
+/// is the part of the page that has to know: it was a static block that offered
+/// "sign in" to a reader who was already signed in, and a `tokens` link that
+/// only bounced an anonymous reader back to the login form.
+struct Nav {
+    signed_in: bool,
+    /// Display name, falling back to the email. Empty when anonymous.
+    who: String,
 }
 
 #[derive(askama::Template)]
@@ -83,6 +96,7 @@ struct ProjectTemplate {
     css_url: String,
     app_js_url: String,
     crumbs: Vec<Crumb>,
+    nav: Nav,
     project: String,
     kinds: &'static [&'static str],
     kind_filter: Option<String>,
@@ -104,6 +118,7 @@ struct ResourceTemplate {
     css_url: String,
     app_js_url: String,
     crumbs: Vec<Crumb>,
+    nav: Nav,
     project: String,
     kind: String,
     slug: String,
@@ -146,6 +161,7 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(index))
         .route("/login", get(login_page))
+        .route("/logout", post(logout))
         .route("/register", get(register_page))
         .route("/settings/tokens", get(tokens_page))
         .route("/p/{project}", get(project_page))
@@ -167,18 +183,47 @@ pub fn escape(raw: &str) -> String {
     out
 }
 
-fn actor_of(state: &AppState, headers: &axum::http::HeaderMap) -> Option<Actor> {
+/// Authenticate once for both the page body and its chrome. One call, one lock:
+/// `AppState::db()` is a plain mutex, so a second nested `db()` inside a handler
+/// that already holds the guard would deadlock rather than fail.
+fn viewer(state: &AppState, headers: &HeaderMap) -> (Option<Actor>, Nav) {
     let conn = state.db();
-    auth::authenticate(&conn, headers).ok().flatten()
+    let actor = auth::authenticate(&conn, headers).ok().flatten();
+    // Only a session gets a signed-in nav. A bearer token is a machine
+    // credential — there is no browser session behind it to sign out of, and it
+    // reaches these pages only when someone is driving them with curl.
+    let nav = match actor.as_ref().filter(|a| a.is_session()) {
+        Some(actor) => Nav {
+            signed_in: true,
+            who: display_name(&conn, &actor.user_id),
+        },
+        None => Nav {
+            signed_in: false,
+            who: String::new(),
+        },
+    };
+    (actor, nav)
+}
+
+/// The name to show in the nav. A missing row is not worth failing a page over:
+/// the reader gets an unlabelled but otherwise correct signed-in nav.
+fn display_name(conn: &Connection, user_id: &str) -> String {
+    conn.query_row(
+        "SELECT display_name, email FROM user WHERE id = ?1",
+        [user_id],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .map(|(name, email)| if name.trim().is_empty() { email } else { name })
+    .unwrap_or_default()
 }
 
 // ------------------------------------------------------------------- pages
 
-async fn index(
-    State(state): State<Arc<AppState>>,
-    headers: axum::http::HeaderMap,
-) -> AppResult<Html<String>> {
-    let actor = actor_of(&state, &headers);
+async fn index(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AppResult<Html<String>> {
+    let (actor, nav) = viewer(&state, &headers);
     let conn = state.db();
     let mut stmt = conn.prepare(
         "SELECT p.slug, p.is_public, (SELECT count(*) FROM resource r WHERE r.project_id = p.id)
@@ -204,7 +249,7 @@ async fn index(
         css_url,
         app_js_url,
         crumbs: Vec::new(),
-        signed_in: actor.is_some(),
+        nav,
         projects: rows
             .into_iter()
             .map(|(slug, is_public, resource_count)| ProjectCard {
@@ -223,11 +268,11 @@ pub struct ProjectQuery {
 
 async fn project_page(
     State(state): State<Arc<AppState>>,
-    headers: axum::http::HeaderMap,
+    headers: HeaderMap,
     Path(project): Path<String>,
     Query(query): Query<ProjectQuery>,
 ) -> AppResult<Html<String>> {
-    let actor = actor_of(&state, &headers);
+    let (actor, nav) = viewer(&state, &headers);
     let conn = state.db();
     let project_id = readable_project(&conn, actor.as_ref(), &project)?;
 
@@ -267,6 +312,7 @@ async fn project_page(
                 href: None,
             },
         ],
+        nav,
         project: project.clone(),
         kinds: &RESOURCE_KINDS,
         kind_filter: kind_filter.map(|k| k.to_string()),
@@ -290,7 +336,7 @@ pub struct ResourceQuery {
 
 async fn resource_page(
     State(state): State<Arc<AppState>>,
-    headers: axum::http::HeaderMap,
+    headers: HeaderMap,
     Path((project, kind, raw_slug)): Path<(String, String, String)>,
     Query(query): Query<ResourceQuery>,
 ) -> AppResult<Html<String>> {
@@ -305,7 +351,7 @@ async fn resource_page(
         None => (raw_slug.clone(), None),
     };
 
-    let actor = actor_of(&state, &headers);
+    let (actor, nav) = viewer(&state, &headers);
     let conn = state.db();
     let project_id = readable_project(&conn, actor.as_ref(), &project)?;
 
@@ -343,6 +389,7 @@ async fn resource_page(
             css_url,
             app_js_url,
             crumbs,
+            nav,
             project,
             kind: detail.summary.kind,
             slug: detail.summary.slug,
@@ -389,6 +436,7 @@ async fn resource_page(
         css_url,
         app_js_url,
         crumbs,
+        nav,
         project,
         kind: detail.summary.kind,
         slug: detail.summary.slug,
@@ -486,7 +534,11 @@ fn urlencode(raw: &str) -> String {
 
 // ------------------------------------------------------------- auth screens
 
-async fn login_page() -> AppResult<Html<String>> {
+async fn login_page(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> AppResult<Html<String>> {
+    let (_, nav) = viewer(&state, &headers);
     let (title, css_url, app_js_url) = chrome("sign in");
     render(&LoginTemplate {
         title,
@@ -494,10 +546,15 @@ async fn login_page() -> AppResult<Html<String>> {
         app_js_url,
         page_js_url: assets::url("login.js"),
         crumbs: Vec::new(),
+        nav,
     })
 }
 
-async fn register_page() -> AppResult<Html<String>> {
+async fn register_page(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> AppResult<Html<String>> {
+    let (_, nav) = viewer(&state, &headers);
     let (title, css_url, app_js_url) = chrome("register");
     render(&RegisterTemplate {
         title,
@@ -505,18 +562,59 @@ async fn register_page() -> AppResult<Html<String>> {
         app_js_url,
         page_js_url: assets::url("register.js"),
         crumbs: Vec::new(),
+        nav,
     })
 }
 
-async fn tokens_page() -> AppResult<Html<String>> {
+async fn tokens_page(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> AppResult<Response> {
+    let (actor, nav) = viewer(&state, &headers);
+    // The page is a shell that `tokens.js` fills from `/v1/tokens`; without a
+    // session that fetch 401s and the script sends the reader here anyway.
+    // Deciding it server-side means no empty token table flashes first, and it
+    // matches every other private page on this surface.
+    if !actor.is_some_and(|a| a.is_session()) {
+        return Ok(redirect_to_login());
+    }
     let (title, css_url, app_js_url) = chrome("tokens");
-    render(&TokensTemplate {
+    Ok(render(&TokensTemplate {
         title,
         css_url,
         app_js_url,
         page_js_url: assets::url("tokens.js"),
         crumbs: Vec::new(),
-    })
+        nav,
+    })?
+    .into_response())
+}
+
+/// Sign-out for the browser. `POST /v1/auth/logout` answers JSON, which is right
+/// for a client and wrong for a nav control: posting the form there would leave
+/// the reader looking at `{"ok":true}`. This ends the same session and sends
+/// them back to the project list.
+///
+/// It is a POST, not a link: `SameSite=Lax` withholds the session cookie from a
+/// cross-site POST, so a hostile page cannot sign someone out by embedding an
+/// image or a redirect.
+async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AppResult<Response> {
+    {
+        let conn = state.db();
+        auth::end_session(&conn, &headers)?;
+    }
+    Ok((
+        StatusCode::SEE_OTHER,
+        [
+            (
+                header::SET_COOKIE,
+                auth::clear_session_cookie(state.config.insecure_cookies),
+            ),
+            (header::LOCATION, "/".to_string()),
+        ],
+        (),
+    )
+        .into_response())
 }
 
 /// Web pages answer an unauthenticated read with a redirect to sign-in rather

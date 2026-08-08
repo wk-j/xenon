@@ -244,6 +244,20 @@ pub fn clear_session_cookie(insecure: bool) -> String {
     session_cookie("", insecure, 0)
 }
 
+/// Delete the session this request's cookie points at, if it has one. Shared by
+/// the JSON logout endpoint and the browse UI's sign-out form so both mean the
+/// same thing by "signed out" — the row goes, not just the cookie, so a copied
+/// cookie value is dead too.
+pub fn end_session(conn: &Connection, headers: &HeaderMap) -> AppResult<()> {
+    if let Some(value) = read_cookie(headers, SESSION_COOKIE) {
+        conn.execute(
+            "DELETE FROM session WHERE id = ?1",
+            [sha256_hex(value.as_bytes())],
+        )?;
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------- authentication
 
 fn bearer(headers: &HeaderMap) -> Option<String> {
