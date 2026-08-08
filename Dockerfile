@@ -17,6 +17,10 @@ RUN mkdir -p src && \
 
 COPY src ./src
 # Touch so cargo does not reuse the stub's fingerprint.
+# Frontend assets are baked into the binary with include_str!, so they must be
+# present at compile time. Without this COPY the build fails here rather than at
+# runtime — which is the right place, but only if the directory is copied at all.
+COPY assets ./assets
 RUN touch src/main.rs src/lib.rs && cargo build --release
 
 

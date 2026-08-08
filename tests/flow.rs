@@ -81,6 +81,26 @@ impl Server {
         self.send(req.body(Body::empty()).unwrap()).await
     }
 
+    /// A browse-UI page as raw HTML. `send` parses JSON, which an HTML response
+    /// is not, so the body has to be read separately here.
+    async fn get_html(&self, path: &str, session: Option<&str>) -> (StatusCode, String) {
+        let mut req = Request::get(path);
+        if let Some(session) = session {
+            req = req.header(header::COOKIE, format!("xenon_session={session}"));
+        }
+        let response = self
+            .app
+            .clone()
+            .oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 8 * 1024 * 1024)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).to_string())
+    }
+
     async fn put_blob(&self, digest: &str, auth: &str, bytes: &[u8]) -> Res {
         let mut req = Request::put(format!("/v1/blobs/{digest}"));
         req = apply_auth(req, Some(auth));
@@ -1033,4 +1053,115 @@ async fn health_endpoint_needs_no_credential() {
     let server = Server::start();
     let res = server.get("/healthz", None).await;
     assert_eq!(res.status, StatusCode::OK);
+}
+
+/// The acceptance test for stage 1 of docs/02-frontend-architecture.md: a Review
+/// Board pushed from Krypton must reach the browse UI as semantic markup, not as
+/// the raw fence source that comrak alone produces.
+#[tokio::test]
+async fn a_published_review_board_renders_its_typed_blocks() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(&session, json!(["resource:write", "resource:read"]))
+        .await;
+
+    let board = "# รีวิว Xenon publisher\n\n\
+        เนื้อความอธิบายว่าโค้ดนี้ทำอะไร\n\n\
+        ```review:walkthrough\ntitle: อ่านตามลำดับนี้\nsteps:\n  - at: src/xenon.rs:742\n    say: หัวใจของการเปลี่ยนแปลง\n```\n\n\
+        ```review:finding\nseverity: blocking\ntitle: คิวลองใหม่ไม่เคยถูกอ่าน\nfile: src/commands.rs\nline: 1477\n```\n\n\
+        ```review:metrics\nReviewers: 1\nBlockers: 4\n```\n\n\
+        ```review:svg\n<svg viewBox=\"0 0 4 4\"><circle cx=\"2\" cy=\"2\" r=\"1\"/></svg>\n```\n\n\
+        ```review:svg\n<svg onload=\"alert(1)\"></svg>\n```\n\n\
+        ```rust\nfn untouched() {}\n```\n";
+
+    let res = server
+        .post(
+            "/v1/projects/krypton/resources:inline",
+            Some(&token),
+            json!({
+                "kind": "review",
+                "slug": "2026-08-08-stage-one",
+                "title": "stage one",
+                "contents": [{
+                    "path": "review.md",
+                    "content_base64": data_encoding::BASE64.encode(board.as_bytes()),
+                    "content_type": "text/markdown",
+                }],
+            }),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::CREATED, "{:?}", res.body);
+
+    let (status, html) = server
+        .get_html("/r/krypton/review/2026-08-08-stage-one", Some(&session))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The fences are gone, replaced by semantic markup.
+    assert!(
+        !html.contains("language-review:"),
+        "typed fences should not survive as code blocks: {html}"
+    );
+    assert!(html.contains("rv-steps"), "walkthrough missing");
+    assert!(html.contains("src/xenon.rs:742"), "step anchor missing");
+    assert!(
+        html.contains("rv-finding--blocking"),
+        "finding tone missing"
+    );
+    assert!(html.contains("BLOCK"), "severity chip missing");
+    assert!(html.contains("rv-metrics"), "metrics missing");
+
+    // Thai prose and titles survive the byte-oriented post-pass.
+    assert!(html.contains("คิวลองใหม่ไม่เคยถูกอ่าน"));
+    assert!(html.contains("เนื้อความอธิบายว่าโค้ดนี้ทำอะไร"));
+
+    // The clean diagram passes through; the hostile one is refused whole.
+    assert!(html.contains("<div class=\"rv-svg\">"), "clean svg refused");
+    assert!(html.contains("svg not rendered"), "hostile svg not refused");
+    assert!(
+        !html.contains("onload=\"alert(1)\""),
+        "handler markup must never reach the page live: {html}"
+    );
+
+    // A non-review fence is left exactly as comrak wrote it.
+    assert!(
+        html.contains("language-rust"),
+        "unrelated fence was touched"
+    );
+}
+
+/// Frontend assets are separate files served from `/assets`, not string
+/// constants inside a handler. Guard both halves: the pages must reference them,
+/// and the references must actually resolve.
+#[tokio::test]
+async fn pages_link_external_assets_and_carry_no_inline_script() {
+    let server = Server::start();
+    let (status, html) = server.get_html("/login", None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert!(
+        html.contains("<link rel=\"stylesheet\" href=\"/assets/app.css?v="),
+        "stylesheet must be linked, not inlined: {html}"
+    );
+    assert!(html.contains("/assets/app.js?v="), "shared helpers missing");
+    assert!(html.contains("/assets/login.js?v="), "page script missing");
+    assert!(
+        !html.contains("<style>"),
+        "no inline style should remain: {html}"
+    );
+    assert!(
+        !html.contains("<script>"),
+        "no inline script should remain — it is what blocks a CSP: {html}"
+    );
+
+    // Every referenced asset resolves, with a cacheable content-hashed URL.
+    for name in ["app.css", "app.js", "login.js", "register.js", "tokens.js"] {
+        let (status, body) = server.get_html(&format!("/assets/{name}"), None).await;
+        assert_eq!(status, StatusCode::OK, "/assets/{name}");
+        assert!(!body.is_empty(), "/assets/{name} is empty");
+    }
+
+    let (missing, _) = server.get_html("/assets/nope.css", None).await;
+    assert_eq!(missing, StatusCode::NOT_FOUND);
 }

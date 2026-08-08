@@ -15,6 +15,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::api::{load_resource_detail, readable_project, RESOURCE_KINDS};
+use crate::assets;
 use crate::auth::{self, Actor};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
@@ -29,82 +30,14 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/r/{project}/{kind}/{*slug}", get(resource_page))
 }
 
-const STYLE: &str = r#"
-:root{--bg:#17191d;--fg:#eaecef;--text:#b7bdc6;--muted:#707a8a;--border:#2f353d;
---accent:#fcd535;--card:#21242a;--code-bg:#1d1f24;--code-fg:#f0b90b;--add:#0ecb81;--del:#f6465d;
---sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Helvetica,Arial,sans-serif;
---mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 var(--sans)}
-a{color:var(--accent);text-decoration:none}
-a:hover{text-decoration:underline}
-.wrap{max-width:1100px;margin:0 auto;padding:24px 20px 64px}
-header.top{display:flex;align-items:baseline;gap:16px;border-bottom:1px solid var(--border);
-padding-bottom:12px;margin-bottom:20px}
-header.top h1{font:600 15px/1 var(--mono);letter-spacing:.04em;margin:0;color:var(--accent)}
-header.top nav{margin-left:auto;display:flex;gap:14px;font:11px/1 var(--mono);letter-spacing:.04em}
-header.top nav a{color:var(--muted)}
-header.top nav a:hover{color:var(--accent)}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:13px}
-.card h3{margin:0 0 6px;font:600 13px/1.3 var(--sans)}
-.meta{font:11px/1.6 var(--mono);color:var(--muted);letter-spacing:.04em;
-font-variant-numeric:tabular-nums}
-.pill{display:inline-block;background:var(--code-bg);border-radius:5px;padding:2px 7px;
-font:10px/1.6 var(--mono);letter-spacing:.04em;color:var(--muted)}
-.pill.k{color:var(--accent)}
-.empty{text-align:center;color:var(--muted);font:12px/2 var(--mono);padding:36px 0}
-.footer{border-top:1px solid var(--border);margin-top:28px;padding-top:10px;
-font:11px/1.6 var(--mono);color:var(--muted)}
-.kinds{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
-.kinds a{background:var(--code-bg);border:1px solid var(--border);border-radius:5px;
-padding:3px 9px;font:10px/1.6 var(--mono);letter-spacing:.04em;color:var(--muted)}
-.kinds a.on{color:var(--bg);background:var(--accent);border-color:var(--accent)}
-.files{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 16px;padding:0;list-style:none}
-.files a{display:block;background:var(--code-bg);border:1px solid var(--border);border-radius:5px;
-padding:3px 9px;font:11px/1.6 var(--mono);color:var(--muted)}
-.files a.on{color:var(--accent);border-color:var(--accent)}
-article.doc{max-width:820px;font-size:15px;line-height:1.65;color:var(--text)}
-article.doc h1{font-size:1.75em;color:var(--accent)}
-article.doc h2{font-size:1.35em;border-bottom:1px solid var(--border);padding-bottom:.2em}
-article.doc h3{font-size:1.15em;color:var(--accent)}
-article.doc code{background:var(--code-bg);color:var(--code-fg);border-radius:3px;padding:1px 4px;
-font:.9em var(--mono)}
-article.doc pre{background:var(--code-bg);border:1px solid var(--border);border-radius:8px;
-padding:12px;overflow:auto}
-article.doc pre code{background:none;color:var(--text);padding:0}
-article.doc table{border-collapse:collapse;width:100%}
-article.doc th,article.doc td{border:1px solid var(--border);padding:6px 9px;text-align:left}
-article.doc blockquote{border:1px solid var(--border);border-radius:8px;
-background:rgba(112,122,138,.08);margin:1em 0;padding:.6em 1em;color:var(--muted)}
-article.doc img{max-width:100%;border-radius:8px}
-iframe.artifact{width:100%;height:78vh;border:1px solid var(--border);border-radius:10px;
-background:var(--bg)}
-form.auth{max-width:380px}
-form.auth label{display:block;font:10px/2 var(--mono);letter-spacing:.04em;color:var(--muted)}
-form.auth input,form.auth select{width:100%;background:var(--code-bg);color:var(--fg);
-border:1px solid var(--border);border-radius:6px;padding:8px 10px;font:13px var(--mono);
-margin-bottom:12px}
-button{background:var(--accent);color:var(--bg);border:0;border-radius:6px;padding:8px 16px;
-font:600 12px var(--mono);letter-spacing:.04em;cursor:pointer}
-button.ghost{background:var(--code-bg);color:var(--muted);border:1px solid var(--border)}
-.msg{font:11px/1.6 var(--mono);margin:10px 0;min-height:1.6em}
-.msg.err{color:var(--del)}
-.msg.ok{color:var(--add)}
-table.data{width:100%;border-collapse:collapse;font:11px/1.6 var(--mono);
-font-variant-numeric:tabular-nums}
-table.data th{text-align:left;color:var(--muted);font-weight:400;letter-spacing:.04em;
-border-bottom:1px solid var(--border);padding:6px 8px}
-table.data td{border-bottom:1px solid var(--border);padding:6px 8px;color:var(--text)}
-.secret{background:var(--code-bg);border:1px solid var(--accent);border-radius:8px;padding:12px;
-margin:12px 0;font:12px var(--mono);color:var(--accent);word-break:break-all}
-.scopes{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px;font:11px var(--mono);
-color:var(--text)}
-.scopes label{display:flex;align-items:center;gap:5px}
-.scopes input{width:auto;margin:0}
-"#;
-
+/// Every page is rendered through here. `page_script` names an asset in
+/// `assets/` (not inline source) so the browse UI has no inline `<script>` left
+/// — which is what makes a real Content-Security-Policy possible later.
 fn shell(title: &str, body: &str) -> Html<String> {
+    shell_with(title, body, None)
+}
+
+fn shell_with(title: &str, body: &str, page_script: Option<&str>) -> Html<String> {
     Html(format!(
         r#"<!doctype html>
 <html lang="en"><head>
@@ -112,33 +45,8 @@ fn shell(title: &str, body: &str) -> Html<String> {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <title>{title} · xenon</title>
-<style>{STYLE}</style>
-<script>
-// Shared fetch helpers. Every form goes through these so a dead server or a
-// dropped connection reports "cannot reach the server" instead of leaving the
-// page stuck on its in-progress message forever.
-async function xreq(method, url, body) {{
-  try {{
-    const init = {{ method }};
-    if (body !== undefined) {{
-      init.headers = {{ 'content-type': 'application/json' }};
-      init.body = JSON.stringify(body);
-    }}
-    const res = await fetch(url, init);
-    let data = {{}};
-    try {{ data = await res.json(); }} catch (_) {{ /* empty or non-JSON body */ }}
-    return {{ ok: res.ok, status: res.status, data }};
-  }} catch (_) {{
-    return {{ ok: false, status: 0, data: {{}}, offline: true }};
-  }}
-}}
-function xfail(el, result, fallback) {{
-  el.className = 'msg err';
-  el.textContent = result.offline
-    ? 'cannot reach the server — is it still running?'
-    : (result.data.message || fallback);
-}}
-</script>
+<link rel="stylesheet" href="{css}">
+<script src="{app_js}" defer></script>{page_script}
 </head><body><div class="wrap">
 <header class="top"><h1>xenon</h1>
 <nav>
@@ -149,7 +57,17 @@ function xfail(el, result, fallback) {{
 {body}
 </div></body></html>"#,
         title = escape(title),
+        css = assets::url("app.css"),
+        app_js = assets::url("app.js"),
+        page_script = script_tag(page_script),
     ))
+}
+
+fn script_tag(page_script: Option<&str>) -> String {
+    match page_script {
+        Some(name) => format!("\n<script src=\"{}\" defer></script>", assets::url(name)),
+        None => String::new(),
+    }
 }
 
 pub fn escape(raw: &str) -> String {
@@ -435,9 +353,13 @@ fn render_file(
         };
         let bytes = state.blobs.read(&sha)?;
         let text = String::from_utf8_lossy(&bytes);
+        // A Review Board / analysis carries typed fences (```review:finding …)
+        // that comrak renders as anonymous grey code blocks. The post-pass turns
+        // the ones we know into semantic markup and leaves the rest alone, so a
+        // Board read here shows what it shows inside Krypton.
         return Ok(format!(
             "<article class=\"doc\">{}</article>",
-            markdown_to_html(&text)
+            crate::render::render_review_blocks(&markdown_to_html(&text))
         ));
     }
     Ok(format!(
@@ -476,7 +398,7 @@ fn urlencode(raw: &str) -> String {
 // ------------------------------------------------------------- auth screens
 
 async fn login_page() -> Html<String> {
-    shell(
+    shell_with(
         "sign in",
         r#"<h2>sign in</h2>
 <form class="auth" id="f">
@@ -487,24 +409,13 @@ async fn login_page() -> Html<String> {
   <p class="msg" id="m"></p>
   <p class="meta">no account yet? <a href="/register">register</a></p>
 </form>
-<script>
-document.getElementById('f').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const m = document.getElementById('m');
-  m.className = 'msg'; m.textContent = 'signing in…';
-  const r = await xreq('POST', '/v1/auth/login', {
-    email: document.getElementById('email').value,
-    password: document.getElementById('password').value,
-  });
-  if (r.ok) { location.href = '/'; return; }
-  xfail(m, r, 'sign in failed');
-});
-</script>"#,
+"#,
+        Some("login.js"),
     )
 }
 
 async fn register_page() -> Html<String> {
-    shell(
+    shell_with(
         "register",
         r#"<h2>register</h2>
 <p class="meta">the first account on a fresh instance becomes the admin and needs no invite.</p>
@@ -518,26 +429,13 @@ async fn register_page() -> Html<String> {
   <button type="submit">create account</button>
   <p class="msg" id="m"></p>
 </form>
-<script>
-document.getElementById('f').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const m = document.getElementById('m');
-  m.className = 'msg'; m.textContent = 'creating…';
-  const r = await xreq('POST', '/v1/auth/register', {
-    email: document.getElementById('email').value,
-    password: document.getElementById('password').value,
-    display_name: document.getElementById('display_name').value || null,
-    invite: document.getElementById('invite').value || null,
-  });
-  if (r.ok) { location.href = '/settings/tokens'; return; }
-  xfail(m, r, 'registration failed');
-});
-</script>"#,
+"#,
+        Some("register.js"),
     )
 }
 
 async fn tokens_page() -> Html<String> {
-    shell(
+    shell_with(
         "tokens",
         r#"<h2>api tokens</h2>
 <p class="meta">mint one token per client. the secret is shown once, here, and never again —
@@ -563,68 +461,8 @@ copy it straight into krypton or your integration.</p>
 <th>id</th><th>label</th><th>scopes</th><th>project</th><th>last used</th><th></th>
 </tr></thead><tbody id="rows"></tbody></table>
 <p class="empty" id="none" hidden>no active tokens</p>
-<script>
-const fmt = (t) => t ? new Date(t * 1000).toISOString().slice(0, 16).replace('T', ' ') : 'never';
-
-async function load() {
-  const r = await xreq('GET', '/v1/tokens');
-  if (r.status === 401) { location.href = '/login'; return; }
-  if (!r.ok) { xfail(document.getElementById('m'), r, 'could not load tokens'); return; }
-  const tokens = Array.isArray(r.data) ? r.data : [];
-  const rows = document.getElementById('rows');
-  rows.textContent = '';
-  document.getElementById('none').hidden = tokens.length > 0;
-  for (const t of tokens) {
-    const tr = document.createElement('tr');
-    for (const value of [t.id, t.label, t.scopes.join(' '), t.project || '—', fmt(t.last_used_at)]) {
-      const td = document.createElement('td');
-      td.textContent = value;
-      tr.append(td);
-    }
-    const td = document.createElement('td');
-    const button = document.createElement('button');
-    button.className = 'ghost';
-    button.textContent = 'revoke';
-    button.addEventListener('click', async () => {
-      if (!confirm('revoke ' + t.label + '? clients using it stop working immediately.')) return;
-      const r = await xreq('DELETE', '/v1/tokens/' + encodeURIComponent(t.id));
-      if (!r.ok) { xfail(document.getElementById('m'), r, 'revoke failed'); return; }
-      load();
-    });
-    td.append(button);
-    tr.append(td);
-    rows.append(tr);
-  }
-}
-
-document.getElementById('f').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const m = document.getElementById('m');
-  m.className = 'msg'; m.textContent = 'creating…';
-  const scopes = [...document.querySelectorAll('.scopes input:checked')].map((i) => i.value);
-  const days = parseInt(document.getElementById('days').value, 10);
-  const r = await xreq('POST', '/v1/tokens', {
-    label: document.getElementById('label').value,
-    scopes,
-    project: document.getElementById('project').value || null,
-    expires_in_days: Number.isFinite(days) ? days : null,
-  });
-  if (r.status === 401) { location.href = '/login'; return; }
-  if (!r.ok) { xfail(m, r, 'could not create the token'); return; }
-  const data = r.data;
-  m.className = 'msg ok';
-  m.textContent = 'created — copy the secret below now, it is not shown again';
-  const box = document.getElementById('secret');
-  box.textContent = '';
-  const pre = document.createElement('div');
-  pre.className = 'secret';
-  pre.textContent = data.token;
-  box.append(pre);
-  load();
-});
-
-load();
-</script>"#,
+"#,
+        Some("tokens.js"),
     )
 }
 
