@@ -1,6 +1,6 @@
 # Frontend Architecture — Implementation Spec
 
-> Status: Stage 1 Implemented · Stage 2 assets Implemented · Stage 3 Retired (no framework) · `maud` still Draft
+> Status: Stage 1 + 1b Implemented · Stage 2 assets Implemented · Stage 3 Retired (no framework) · `maud` still Draft
 > Date: 2026-08-08
 > Reviewed: 2026-08-08 by Grok-1 (architecture & correctness) — 4 blockers, 10 warnings.
 > Synthesis: `.krypton/reviews/2026-08-08-xenon-frontend-architecture-review-synthesis/`.
@@ -110,6 +110,7 @@ server rendering by vendoring htmx rather than reaching for a CDN.
 |------|--------|
 | `src/web.rs` | Split: `format!` HTML → `maud` templates; extract page modules as it grows past one file |
 | `src/render.rs` | **New** — typed-block post-pass (stage 1), ported from Krypton's `render_review_blocks` |
+| `src/meta.rs` | **New** — renders a revision's `meta` for a resource with no files (stage 1b); the `attention` kind's entire payload |
 | `assets/` | **New** — `app.css`, `app.js`, `login.js`, `register.js`, `tokens.js`; plain JS, no framework, no build step |
 | `src/assets.rs` | **New** — `include_str!` table + `/assets/{name}` route, content-hashed URL helper |
 | `src/api.rs` | Unchanged — `/v1/` is the only API; the browse UI fetches JSON from it |
@@ -147,6 +148,38 @@ would give. Do not describe it as one. If Xenon later accepts resources from unt
 this decision must be revisited before that lands.
 
 No new dependency. No client-side code. Ships alone.
+
+### Stage 1b — Meta rendering for fileless resources
+
+Stage 1 fixed markdown that rendered as less than it meant. The same class of gap existed one
+level up: `resource_page` picks a file from the revision and renders its bytes, so a resource with
+**no** files fell to `<p class="empty">this revision has no files</p>`.
+
+That is exactly wrong for `attention`. Four of the five kinds carry their substance on disk and use
+`meta` as a breadcrumb (`{"source": ".krypton/reviews"}`, `{"lane": "…"}`). A judgement item has no
+on-disk form at all — Krypton's `attention_flag` writes the question, the option the lane chose, the
+rationale, the trade-offs it rejected and its stated uncertainty into `meta` and nothing else. So the
+one kind whose whole reason for existing is to be *read by a human* was the one rendering as a title
+over an empty page, with ~7 KB of payload sitting unshown in the row.
+
+`src/meta.rs::render_meta(kind, meta, title)` fills that page:
+
+- **`attention`** gets a hand-laid-out reading order — reversibility tier, then the question (skipped
+  when it merely repeats the heading, which it usually does since the title *is* the truncated
+  question), then chosen, rationale, traded-off, uncertainty, then lane + timestamp.
+- **Every other kind, and every unrecognised key of a known kind**, falls through to a generic
+  key/value table. This is deliberate: a producer that adds a field gets it displayed rather than
+  silently dropped, which is the failure mode this whole section exists to correct.
+- **Returning `None`** when there is genuinely nothing to show leaves the caller's empty state
+  intact. Files still win whenever a revision has any.
+
+The same escaping posture as stage 1 applies and for the same reason: this is agent-authored text on
+an origin holding session cookies, so every renderer here escapes what it emits. Unlike
+`render_rv_svg` there is no exception — no path in this module emits raw input.
+
+Timestamps are formatted in-module (`utc_stamp`) rather than by adding a date crate, and accept both
+Krypton's `Date.now()` milliseconds and the server's own seconds — the magnitude distinguishes them,
+so a producer that switches units does not start printing 1970.
 
 ### Stage 2 — Assets (done) and templates (proposed)
 

@@ -1160,6 +1160,86 @@ async fn a_published_review_board_renders_its_typed_blocks() {
     );
 }
 
+/// An attention flag is the one kind with NO files — question, chosen option,
+/// rationale, trade-offs and uncertainty all travel in `meta`. Before the meta
+/// renderer the page showed its title over "this revision has no files", which
+/// is the entire payload withheld from the reader.
+#[tokio::test]
+async fn a_published_attention_flag_renders_its_whole_payload() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(&session, json!(["resource:write", "resource:read"]))
+        .await;
+
+    let res = server
+        .post(
+            "/v1/projects/krypton/resources:inline",
+            Some(&token),
+            json!({
+                "kind": "attention",
+                "slug": "jdg-1786195508583-22c4b9f0",
+                "title": "ควรแจ้งผลด้วยกล่องข้อความ หรือปล่อยให้ดูที่แถบสถานะ?",
+                "meta": {
+                    "id": "jdg-1786195508583-22c4b9f0",
+                    "laneId": "claude-1",
+                    "laneName": "Claude-1",
+                    "createdAt": 1786195508583i64,
+                    "question": "ควรแจ้งผลด้วยกล่องข้อความ หรือปล่อยให้ดูที่แถบสถานะ?",
+                    "chosen": "แจ้งด้วยกล่องข้อความเด้งมุมจอ",
+                    "rationale": "ถ้าสถานะไม่เปลี่ยน หน้าจอจะไม่ขยับเลย",
+                    "tradedOff": ["ไม่แจ้งอะไรเลย", "สร้างกลไก chip ใหม่"],
+                    "uncertainty": "ไม่แน่ใจว่าคุณรำคาญกล่องเด้งแค่ไหน",
+                    "reversibility": "costly"
+                },
+                "contents": [],
+            }),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::CREATED, "{:?}", res.body);
+
+    let (status, html) = server
+        .get_html(
+            "/r/krypton/attention/jdg-1786195508583-22c4b9f0",
+            Some(&session),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert!(
+        !html.contains("this revision has no files"),
+        "the file-only empty state must not survive a fileless kind: {html}"
+    );
+    // Every field the lane wrote reaches the reader.
+    for expected in [
+        "แจ้งด้วยกล่องข้อความเด้งมุมจอ",
+        "ถ้าสถานะไม่เปลี่ยน หน้าจอจะไม่ขยับเลย",
+        "ไม่แจ้งอะไรเลย",
+        "สร้างกลไก chip ใหม่",
+        "ไม่แน่ใจว่าคุณรำคาญกล่องเด้งแค่ไหน",
+        "Claude-1",
+    ] {
+        assert!(html.contains(expected), "missing {expected} in {html}");
+    }
+    // Reversibility carries as a text chip as well as a colour.
+    assert!(
+        html.contains("jdg__tier--costly"),
+        "tier tone missing: {html}"
+    );
+    assert!(html.contains("costly"), "tier text missing: {html}");
+    // The epoch renders as a date. (The slug carries the same digits, so the
+    // real check is that `createdAt` never reaches the fallback table — that is
+    // where an unformatted value would surface.)
+    assert!(
+        html.contains("2026-08-08 13:25 UTC"),
+        "timestamp raw: {html}"
+    );
+    assert!(
+        !html.contains("createdAt"),
+        "createdAt fell through to the generic table unformatted: {html}"
+    );
+}
+
 /// Frontend assets are separate files served from `/assets`, not string
 /// constants inside a handler. Guard both halves: the pages must reference them,
 /// and the references must actually resolve.

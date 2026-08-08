@@ -149,3 +149,31 @@ pre.rv-diff span{display:block}
 .rv-svg{margin:1em 0;text-align:center}
 .rv-svg svg{max-width:100%;height:auto}
 .rv-unknown{font:11px var(--mono);color:var(--muted);margin:1em 0 -.6em}
+
+/* Attention flag — a judgement item, whose entire payload is the revision's
+   `meta` (no files exist for this kind). Field headings carry the structure;
+   the reversibility tier is a text chip AND a colour, never colour alone. Flat
+   by house rule: one surface, no card inside a card, no left accent rails. */
+.jdg{max-width:820px;margin:1.2em 0}
+.jdg__tier{display:inline-block;margin:0 0 1.2em;padding:2px 8px;border-radius:5px;
+border:1px solid var(--border);background:var(--code-bg);
+font:700 11px/1.6 var(--mono);letter-spacing:.06em;color:var(--muted)}
+.jdg__tier--costly{color:var(--warn);border-color:var(--warn)}
+.jdg__tier--irreversible{color:var(--del);border-color:var(--del)}
+.jdg__field{margin:0 0 1.4em}
+.jdg__field h3{margin:0 0 .35em;font:12px var(--mono);color:var(--muted);
+text-transform:uppercase;letter-spacing:.04em}
+.jdg__body{color:var(--text);font-size:15px;line-height:1.65}
+ul.jdg__list{margin:0;padding-left:1.3em}
+ul.jdg__list>li{margin:.25em 0}
+
+/* Whatever the per-kind layout above did not claim. The floor that keeps a
+   field from being silently dropped when a producer adds one. */
+table.kv{border-collapse:collapse;margin:1.4em 0;max-width:820px;width:100%}
+table.kv th,table.kv td{border-top:1px solid var(--border);padding:7px 12px 7px 0;
+text-align:left;vertical-align:top}
+table.kv th{width:11em;font:12px/1.6 var(--mono);color:var(--muted);font-weight:400;
+letter-spacing:.04em}
+table.kv td{color:var(--text);word-break:break-word}
+pre.kv__json{margin:0;font:12px/1.45 var(--mono);color:var(--code-fg);
+background:var(--code-bg);border-radius:6px;padding:10px 12px;overflow-x:auto}

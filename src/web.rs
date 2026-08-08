@@ -360,9 +360,18 @@ async fn resource_page(
         .and_then(|want| revision.files.iter().find(|f| f.path == want))
         .or_else(|| revision.files.first());
 
+    // A resource with no files is not an empty resource. `attention` has no
+    // on-disk form at all — its question, the option the lane chose, and the
+    // rationale all live in the revision's `meta` — so a file-only renderer
+    // showed such a resource as a title over "this revision has no files",
+    // withholding the entire payload from the reader. Files still win when
+    // there are any; meta is what fills the page when there are none.
     let content = match selected {
-        None => "<p class=\"empty\">this revision has no files</p>".to_string(),
         Some(file) => render_file(&state, &revision.id, &file.path, &file.content_type)?,
+        None => {
+            crate::meta::render_meta(&detail.summary.kind, &revision.meta, &detail.summary.title)
+                .unwrap_or_else(|| "<p class=\"empty\">this revision has no files</p>".to_string())
+        }
     };
 
     let files = revision
