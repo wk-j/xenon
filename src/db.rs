@@ -40,6 +40,22 @@ fn configure(conn: &Connection) -> Result<(), String> {
     .map_err(|e| format!("configure database: {e}"))
 }
 
+/// Bring the database up to `SCHEMA_VERSION`.
+///
+/// **`user_version` is a hint, not the truth.** Every step below is written to
+/// be a no-op when it has already been applied, and all of them run on every
+/// boot — the stamp only decides whether there is anything worth logging.
+///
+/// This is not theoretical tidiness. A database in this repo reached
+/// `user_version = 3` with none of v3's columns, because a rebuild-on-save loop
+/// restarted the server in the window where `SCHEMA_VERSION` had been bumped to
+/// 3 but v3's DDL had not been written yet: the ladder found nothing to do for
+/// step 3 and stamped it anyway. Any migration keyed purely on a number it
+/// wrote itself can be lied to that way, and the failure surfaces much later as
+/// "no such column" on a route that has nothing to do with migrations.
+///
+/// The whole thing also runs in one transaction, so a step that fails halfway
+/// cannot leave a half-built schema behind a stamp that says it is complete.
 fn migrate(conn: &Connection) -> Result<(), String> {
     let current: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
@@ -51,26 +67,68 @@ fn migrate(conn: &Connection) -> Result<(), String> {
              upgrade xenon or restore an older data directory"
         ));
     }
-    if current == SCHEMA_VERSION {
-        return Ok(());
-    }
 
-    if current < 1 {
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|e| format!("begin migration: {e}"))?;
+    let applied = (|| -> Result<(), String> {
         conn.execute_batch(SCHEMA_V1)
             .map_err(|e| format!("apply schema v1: {e}"))?;
-    }
-    if current < 2 {
         conn.execute_batch(SCHEMA_V2)
             .map_err(|e| format!("apply schema v2: {e}"))?;
-    }
-    if current < 3 {
-        conn.execute_batch(SCHEMA_V3)
-            .map_err(|e| format!("apply schema v3: {e}"))?;
-    }
+        apply_v3(conn)?;
+        conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
+            .map_err(|e| format!("stamp schema version: {e}"))
+    })();
 
-    conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
-        .map_err(|e| format!("stamp schema version: {e}"))?;
-    Ok(())
+    match applied {
+        Ok(()) => {
+            conn.execute_batch("COMMIT")
+                .map_err(|e| format!("commit migration: {e}"))?;
+            if current < SCHEMA_VERSION {
+                log::info!("database schema migrated from v{current} to v{SCHEMA_VERSION}");
+            }
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+/// v3 by hand, because `ALTER TABLE` has no `IF NOT EXISTS`. Asks the schema
+/// what it actually has rather than trusting the version stamp.
+fn apply_v3(conn: &Connection) -> Result<(), String> {
+    add_column(
+        conn,
+        "revision",
+        "author_id",
+        "TEXT REFERENCES user(id) ON DELETE SET NULL",
+    )?;
+    add_column(
+        conn,
+        "revision",
+        "author_token_id",
+        "TEXT REFERENCES token(id) ON DELETE SET NULL",
+    )?;
+    conn.execute_batch(SCHEMA_V3_BACKFILL)
+        .map_err(|e| format!("apply schema v3: {e}"))
+}
+
+/// Add a column unless the table already has one by that name.
+fn add_column(conn: &Connection, table: &str, column: &str, decl: &str) -> Result<(), String> {
+    let present: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info(?1) WHERE name = ?2",
+            rusqlite::params![table, column],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("inspect {table}: {e}"))?;
+    if present > 0 {
+        return Ok(());
+    }
+    conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))
+        .map_err(|e| format!("add {table}.{column}: {e}"))
 }
 
 /// Note on deletion policy: `resource`/`revision`/`rev_file` cascade from their
@@ -78,7 +136,7 @@ fn migrate(conn: &Connection) -> Result<(), String> {
 /// a disabled or removed account keeps its published work (see spec 212 edge
 /// cases). Accounts are disabled via `user.disabled_at`, not deleted.
 const SCHEMA_V1: &str = r#"
-CREATE TABLE user (
+CREATE TABLE IF NOT EXISTS user (
     id            TEXT PRIMARY KEY,
     email         TEXT NOT NULL UNIQUE COLLATE NOCASE,
     display_name  TEXT NOT NULL,
@@ -88,16 +146,16 @@ CREATE TABLE user (
     disabled_at   INTEGER
 );
 
-CREATE TABLE session (
+CREATE TABLE IF NOT EXISTS session (
     id         TEXT PRIMARY KEY,      -- sha256 of the cookie value, never the value itself
     user_id    TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE,
     created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL,
     user_agent TEXT
 );
-CREATE INDEX session_user_idx ON session(user_id);
+CREATE INDEX IF NOT EXISTS session_user_idx ON session(user_id);
 
-CREATE TABLE invite (
+CREATE TABLE IF NOT EXISTS invite (
     code_hash  TEXT PRIMARY KEY,
     created_by TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE,
     created_at INTEGER NOT NULL,
@@ -106,7 +164,7 @@ CREATE TABLE invite (
     used_at    INTEGER
 );
 
-CREATE TABLE token (
+CREATE TABLE IF NOT EXISTS token (
     id           TEXT PRIMARY KEY,    -- public half, safe to display
     hash         TEXT NOT NULL UNIQUE,-- sha256 of the secret half
     user_id      TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE,
@@ -118,18 +176,18 @@ CREATE TABLE token (
     last_used_at INTEGER,
     revoked_at   INTEGER
 );
-CREATE INDEX token_user_idx ON token(user_id);
+CREATE INDEX IF NOT EXISTS token_user_idx ON token(user_id);
 
-CREATE TABLE project (
+CREATE TABLE IF NOT EXISTS project (
     id         TEXT PRIMARY KEY,
     slug       TEXT NOT NULL UNIQUE,
     owner_id   TEXT NOT NULL REFERENCES user(id),
     is_public  INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
 );
-CREATE INDEX project_owner_idx ON project(owner_id);
+CREATE INDEX IF NOT EXISTS project_owner_idx ON project(owner_id);
 
-CREATE TABLE resource (
+CREATE TABLE IF NOT EXISTS resource (
     id            TEXT PRIMARY KEY,
     project_id    TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
     kind          TEXT NOT NULL,
@@ -140,9 +198,9 @@ CREATE TABLE resource (
     head_revision TEXT,
     UNIQUE(project_id, kind, slug)
 );
-CREATE INDEX resource_project_kind_idx ON resource(project_id, kind, updated_at DESC);
+CREATE INDEX IF NOT EXISTS resource_project_kind_idx ON resource(project_id, kind, updated_at DESC);
 
-CREATE TABLE revision (
+CREATE TABLE IF NOT EXISTS revision (
     id          TEXT PRIMARY KEY,
     resource_id TEXT NOT NULL REFERENCES resource(id) ON DELETE CASCADE,
     seq         INTEGER NOT NULL,
@@ -152,9 +210,9 @@ CREATE TABLE revision (
     sealed_at   INTEGER,              -- NULL until commit; an open revision is invisible
     UNIQUE(resource_id, seq)
 );
-CREATE INDEX revision_resource_idx ON revision(resource_id, seq DESC);
+CREATE INDEX IF NOT EXISTS revision_resource_idx ON revision(resource_id, seq DESC);
 
-CREATE TABLE rev_file (
+CREATE TABLE IF NOT EXISTS rev_file (
     revision_id  TEXT NOT NULL REFERENCES revision(id) ON DELETE CASCADE,
     path         TEXT NOT NULL,
     sha256       TEXT NOT NULL,
@@ -162,9 +220,9 @@ CREATE TABLE rev_file (
     content_type TEXT NOT NULL,
     PRIMARY KEY(revision_id, path)
 );
-CREATE INDEX rev_file_sha_idx ON rev_file(sha256);
+CREATE INDEX IF NOT EXISTS rev_file_sha_idx ON rev_file(sha256);
 
-CREATE TABLE blob (
+CREATE TABLE IF NOT EXISTS blob (
     sha256     TEXT PRIMARY KEY,
     size       INTEGER NOT NULL,
     created_at INTEGER NOT NULL
@@ -183,7 +241,7 @@ CREATE TABLE blob (
 /// user (and an admin). Deciding it on read rather than freezing a flag is the
 /// one place this diverges from Gitea's `action` table; see the spec.
 const SCHEMA_V2: &str = r#"
-CREATE TABLE event (
+CREATE TABLE IF NOT EXISTS event (
     id           TEXT PRIMARY KEY,
     kind         TEXT NOT NULL,
     audience     TEXT NOT NULL,
@@ -196,9 +254,9 @@ CREATE TABLE event (
     detail       TEXT NOT NULL DEFAULT '{}',
     created_at   INTEGER NOT NULL
 );
-CREATE INDEX event_time_idx    ON event(created_at DESC);
-CREATE INDEX event_project_idx ON event(project_id, created_at DESC);
-CREATE INDEX event_actor_idx   ON event(actor_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS event_time_idx    ON event(created_at DESC);
+CREATE INDEX IF NOT EXISTS event_project_idx ON event(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS event_actor_idx   ON event(actor_id, created_at DESC);
 "#;
 
 /// v3 — who uploaded each revision (spec `docs/04-upload-authorship.md`).
@@ -213,10 +271,10 @@ CREATE INDEX event_actor_idx   ON event(actor_id, created_at DESC);
 /// the project's owner, so every pre-v3 revision was pushed by that owner.
 /// `author_token_id` stays NULL there because the credential genuinely was
 /// never recorded — NULL means "not recorded", never "unknown human".
-const SCHEMA_V3: &str = r#"
-ALTER TABLE revision ADD COLUMN author_id       TEXT REFERENCES user(id)  ON DELETE SET NULL;
-ALTER TABLE revision ADD COLUMN author_token_id TEXT REFERENCES token(id) ON DELETE SET NULL;
-CREATE INDEX revision_author_idx ON revision(author_id);
+/// The two `ALTER TABLE`s live in `apply_v3` because SQLite has no
+/// `ADD COLUMN IF NOT EXISTS`; what remains here is idempotent on its own.
+const SCHEMA_V3_BACKFILL: &str = r#"
+CREATE INDEX IF NOT EXISTS revision_author_idx ON revision(author_id);
 
 UPDATE revision SET author_id = (
     SELECT p.owner_id FROM resource r JOIN project p ON p.id = r.project_id
@@ -286,6 +344,67 @@ mod tests {
             token, None,
             "the credential was never recorded, so it stays unrecorded rather than invented"
         );
+    }
+
+    /// The failure that motivated making every step idempotent: a database
+    /// stamped with the current version whose schema does not actually have
+    /// what that version promises. It happened for real — a rebuild-on-save
+    /// loop restarted the server while `SCHEMA_VERSION` was 3 and v3's DDL was
+    /// still unwritten — and the symptom was "no such column: author_id" on an
+    /// ordinary read, long after boot.
+    #[test]
+    fn repairs_a_database_that_lies_about_its_version() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        // The lie: stamped current, missing v3 entirely.
+        conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
+            .unwrap();
+        conn.execute_batch(
+            "INSERT INTO user (id, email, display_name, password_hash, created_at)
+               VALUES ('u1','a@example.com','wk','h',0);
+             INSERT INTO project (id, slug, owner_id, is_public, created_at)
+               VALUES ('p1','p','u1',0,0);
+             INSERT INTO resource (id, project_id, kind, slug, title, created_at, updated_at)
+               VALUES ('res1','p1','doc','a','a',0,0);
+             INSERT INTO revision (id, resource_id, seq, meta, origin, created_at)
+               VALUES ('rev1','res1',1,'{}','{}',0);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let author: Option<String> = conn
+            .query_row(
+                "SELECT author_id FROM revision WHERE id = 'rev1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("the missing column must have been added despite the stamp");
+        assert_eq!(author.as_deref(), Some("u1"), "and backfilled while there");
+    }
+
+    /// A failed step must leave nothing behind — no half-built schema sitting
+    /// under a stamp that claims it is complete.
+    #[test]
+    fn a_failed_migration_rolls_back_instead_of_stamping() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        // Tables and indexes share one namespace in SQLite, so squatting on the
+        // name v3 wants for its index makes that step fail.
+        conn.execute_batch("CREATE TABLE revision_author_idx (x)")
+            .unwrap();
+
+        let err = migrate(&conn).unwrap_err();
+        assert!(
+            err.contains("revision_author_idx"),
+            "unexpected error: {err}"
+        );
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 0, "a failed migration must not stamp a version");
     }
 
     #[test]
