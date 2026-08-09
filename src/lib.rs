@@ -11,6 +11,7 @@ pub mod blob;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod event;
 pub mod meta;
 pub mod render;
 pub mod state;

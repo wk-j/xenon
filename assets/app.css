@@ -76,7 +76,48 @@ transition:background 160ms cubic-bezier(.22,1,.36,1),color 160ms cubic-bezier(.
    canvas colour, so "what am I looking at" is answered from across the room. */
 .kinds a.on{color:var(--bg);background:var(--k);border-color:var(--k)}
 @media (prefers-reduced-motion:reduce){.kinds a{transition:none}}
-.files{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 16px;padding:0;list-style:none}
+/* A resource page is a stack: the title, what it is, then which file of it you
+   are reading. The meta line carried no bottom margin because on a project card
+   it is the last thing in the box — here it is followed by the tab row, and the
+   two boxes were touching at exactly 0px, which read as one crowded control. */
+.res .meta{margin-bottom:14px}
+/* Eleven event kinds is a long filter row, and unlike resource kinds they have
+   no hue of their own — left on the default they all came out accent yellow and
+   shouted over the feed they are filtering. Muted at rest; the accent means
+   "this one is on", which is what it means everywhere else. */
+.kinds--events a{color:var(--muted);border-color:var(--border)}
+.kinds--events a:hover{color:var(--accent);background:var(--code-bg)}
+.kinds--events a.on{color:var(--bg);background:var(--accent);border-color:var(--accent)}
+
+/* Activity feed. A row is a sentence, not a card: actor, verb, object, when.
+   Cards here would be eleven boxes of chrome around one line of text each, and
+   the whole point of the page is that it can be scanned. */
+.feed__day{margin:26px 0 8px;font:11px/1.6 var(--mono);letter-spacing:.06em;color:var(--muted);
+font-weight:400}
+.feed{margin:0;padding:0;list-style:none}
+.feed__row{display:flex;align-items:baseline;gap:10px;padding:7px 0;
+border-top:1px solid var(--border)}
+.feed__row:last-child{border-bottom:1px solid var(--border)}
+/* Wide enough for the longest chip there is (`project.create`), so the column
+   never truncates the one word that says what a row is. */
+.feed__kind{flex:0 0 11.4em;font:10px/1.6 var(--mono);letter-spacing:.04em;color:var(--muted);
+text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Only a row about a resource takes the kind hue; account rows stay muted, so
+   the security entries read as a different class of thing at a glance. */
+.feed__kind--res{color:var(--k)}
+.feed__say{flex:1;min-width:0;color:var(--text)}
+.feed__actor{color:var(--fg)}
+.feed__subject{color:var(--fg)}
+.feed__project{font:11px var(--mono);color:var(--muted)}
+.feed__project:hover{color:var(--accent)}
+.feed__when{flex:0 0 auto;font:11px var(--mono);color:var(--muted);
+font-variant-numeric:tabular-nums}
+@media (max-width:640px){
+  .feed__row{flex-wrap:wrap}
+  .feed__kind{flex-basis:auto;text-align:left}
+  .feed__when{width:100%}
+}
+.files{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 18px;padding:0;list-style:none}
 .files a{display:block;background:var(--code-bg);border:1px solid var(--border);border-radius:5px;
 padding:3px 9px;font:11px/1.6 var(--mono);color:var(--muted)}
 /* The open file belongs to a resource of a known kind, so the tab that is open

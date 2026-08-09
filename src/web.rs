@@ -18,7 +18,12 @@ use crate::api::{load_resource_detail, readable_project, RESOURCE_KINDS};
 use crate::assets;
 use crate::auth::{self, Actor};
 use crate::error::{AppError, AppResult};
+use crate::event;
 use crate::state::AppState;
+
+/// Rows per feed page. Enough to fill a screen, short enough that the "older"
+/// link is reachable without a long scroll.
+const FEED_PAGE: i64 = 40;
 
 // ─── templates ──────────────────────────────────────────────────────────────
 //
@@ -90,6 +95,45 @@ struct Nav {
 }
 
 #[derive(askama::Template)]
+#[template(path = "activity.html")]
+struct ActivityTemplate {
+    title: String,
+    css_url: String,
+    app_js_url: String,
+    crumbs: Vec<Crumb>,
+    nav: Nav,
+    kinds: &'static [&'static str],
+    kind_filter: Option<String>,
+    project_filter: Option<String>,
+    signed_in: bool,
+    days: Vec<FeedDay>,
+    /// Cursor for the next (older) page; `None` when this is the last one.
+    older: Option<i64>,
+    query_base: String,
+}
+
+/// One day heading and the rows under it. Grouping is done server-side because
+/// the page has no JavaScript and the heading is part of the document.
+struct FeedDay {
+    label: String,
+    rows: Vec<FeedRow>,
+}
+
+struct FeedRow {
+    /// `resource.publish` → `publish`; drives the chip text.
+    kind: String,
+    /// The kind of *resource* for content rows, so the row can wear its hue.
+    resource_kind: Option<String>,
+    actor: String,
+    verb: String,
+    subject: String,
+    href: Option<String>,
+    project: Option<String>,
+    when: String,
+    exact: String,
+}
+
+#[derive(askama::Template)]
 #[template(path = "project.html")]
 struct ProjectTemplate {
     title: String,
@@ -108,7 +152,10 @@ struct ResourceCard {
     slug: String,
     title: String,
     revisions: i64,
-    updated_at: i64,
+    /// "3 h ago". The card used to print the raw epoch, which is not a time to
+    /// anyone; the exact value rides along in a `title` attribute.
+    updated: String,
+    updated_exact: String,
 }
 
 #[derive(askama::Template)]
@@ -163,6 +210,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/login", get(login_page))
         .route("/logout", post(logout))
         .route("/register", get(register_page))
+        .route("/activity", get(activity_page))
         .route("/settings/tokens", get(tokens_page))
         .route("/p/{project}", get(project_page))
         .route("/r/{project}/{kind}/{*slug}", get(resource_page))
@@ -262,6 +310,141 @@ async fn index(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AppRes
 }
 
 #[derive(Deserialize)]
+pub struct ActivityPageQuery {
+    project: Option<String>,
+    kind: Option<String>,
+    cursor: Option<i64>,
+}
+
+/// The feed, as a document. Reads through `event::query` so the page and
+/// `/v1/activity` can never disagree about who may see what.
+async fn activity_page(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<ActivityPageQuery>,
+) -> AppResult<Html<String>> {
+    let (actor, nav) = viewer(&state, &headers);
+    let kind_filter = query
+        .kind
+        .as_deref()
+        .filter(|k| event::KINDS.contains(k))
+        .map(str::to_string);
+    let project_filter = query.project.clone().filter(|p| !p.is_empty());
+
+    let conn = state.db();
+    let events = event::query(
+        &conn,
+        actor.as_ref(),
+        &event::Query {
+            project: project_filter.as_deref(),
+            kind: kind_filter.as_deref(),
+            cursor: query.cursor,
+            limit: FEED_PAGE,
+        },
+    )?;
+    drop(conn);
+
+    let older = (events.len() as i64 >= FEED_PAGE)
+        .then(|| events.last().map(|e| e.seq))
+        .flatten();
+
+    let now = crate::util::now();
+    let today = now.div_euclid(86_400);
+    let mut days: Vec<FeedDay> = Vec::new();
+    for e in &events {
+        let day = e.created_at.div_euclid(86_400);
+        let label = match today - day {
+            0 => "today".to_string(),
+            1 => "yesterday".to_string(),
+            _ => crate::util::format_ymd(e.created_at),
+        };
+        let row = feed_row(e, now);
+        match days.last_mut() {
+            Some(last) if last.label == label => last.rows.push(row),
+            _ => days.push(FeedDay {
+                label,
+                rows: vec![row],
+            }),
+        }
+    }
+
+    // Filters have to survive paging, so the "older" link rebuilds them.
+    let mut query_base = String::new();
+    if let Some(p) = &project_filter {
+        query_base.push_str(&format!("project={}&", urlencode(p)));
+    }
+    if let Some(k) = &kind_filter {
+        query_base.push_str(&format!("kind={}&", urlencode(k)));
+    }
+
+    let (title, css_url, app_js_url) = chrome("activity");
+    render(&ActivityTemplate {
+        title,
+        css_url,
+        app_js_url,
+        crumbs: Vec::new(),
+        signed_in: nav.signed_in,
+        nav,
+        kinds: &event::KINDS,
+        kind_filter,
+        project_filter,
+        days,
+        older,
+        query_base,
+    })
+}
+
+/// One event as a sentence: actor, verb, object. The verb is the only place the
+/// eleven kinds differ, so it is the only thing that switches on kind.
+fn feed_row(e: &event::EventView, now: i64) -> FeedRow {
+    let (verb, resource_kind) = match e.kind.as_str() {
+        event::RESOURCE_PUBLISH => ("published", detail_str(e, "kind")),
+        event::RESOURCE_REVISE => ("revised", detail_str(e, "kind")),
+        event::PROJECT_CREATE => ("created project", None),
+        event::ACCOUNT_REGISTER => ("registered", None),
+        event::ACCOUNT_LOGIN => ("signed in as", None),
+        event::ACCOUNT_LOGIN_FAILED => ("failed to sign in as", None),
+        event::ACCOUNT_LOGOUT => ("signed out of", None),
+        event::TOKEN_CREATE => ("minted token", None),
+        event::TOKEN_REVOKE => ("revoked token", None),
+        event::INVITE_CREATE => ("created", None),
+        event::INVITE_CLAIM => ("joined with an invite as", None),
+        _ => ("did", None),
+    };
+    FeedRow {
+        // A row about a resource is chipped with the *resource's* kind, the
+        // same word and hue the project page uses — the verb beside it already
+        // says whether this was a first publish or a revision. Everything else
+        // is chipped with its event kind, minus the `account.` prefix: `login`
+        // and `register` need no qualifier, while `token.create` and
+        // `project.create` would both collapse to a bare `create` without one.
+        kind: match &resource_kind {
+            Some(kind) => kind.clone(),
+            None => e
+                .kind
+                .strip_prefix("account.")
+                .unwrap_or(&e.kind)
+                .to_string(),
+        },
+        resource_kind,
+        actor: e.actor.clone(),
+        verb: verb.to_string(),
+        subject: e.subject.clone(),
+        href: e.url.clone(),
+        project: e.project.clone(),
+        when: crate::util::time_ago(e.created_at, now),
+        exact: crate::util::format_ymd(e.created_at),
+    }
+}
+
+fn detail_str(e: &event::EventView, key: &str) -> Option<String> {
+    e.detail
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+#[derive(Deserialize)]
 pub struct ProjectQuery {
     kind: Option<String>,
 }
@@ -297,6 +480,7 @@ async fn project_page(
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
+    let now = crate::util::now();
     let (title, css_url, app_js_url) = chrome(&project);
     render(&ProjectTemplate {
         title,
@@ -323,7 +507,8 @@ async fn project_page(
                 slug,
                 title,
                 revisions,
-                updated_at,
+                updated: crate::util::time_ago(updated_at, now),
+                updated_exact: crate::util::format_ymd(updated_at),
             })
             .collect(),
     })

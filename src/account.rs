@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use crate::auth::{self, Actor};
 use crate::error::{AppError, AppResult};
+use crate::event;
 use crate::state::AppState;
 use crate::util::{new_id, now, random_base32, sha256_hex};
 
@@ -172,7 +173,19 @@ async fn register(
             "UPDATE invite SET used_by = ?1, used_at = ?2 WHERE code_hash = ?3",
             params![user_id, now(), code_hash],
         )?;
+        event::record(
+            &conn,
+            event::New::account(event::INVITE_CLAIM, &display_name, &email)
+                .actor_id(Some(&user_id)),
+        )?;
     }
+    event::record_and_prune(
+        &state,
+        &conn,
+        event::New::account(event::ACCOUNT_REGISTER, &display_name, &email)
+            .actor_id(Some(&user_id))
+            .detail(serde_json::json!({ "ip": client_ip(&headers), "admin": is_first_user })),
+    )?;
 
     let session = start_session(&conn, &user_id, &headers)?;
     let user = load_user(&conn, &user_id)?;
@@ -221,12 +234,32 @@ async fn login(
         )
         .optional()?;
 
+    // A failure for an email nobody owns is recorded with no actor, so only an
+    // admin can ever see it. Attaching it to an account — or showing it to
+    // anyone else — would rebuild the account-existence oracle that the generic
+    // error above exists to prevent.
+    let record_failure = |user_id: Option<&str>| {
+        // A known account is named; an unknown email is "someone", because
+        // there is nobody to name and inventing one would be a guess.
+        let who = user_id
+            .map(|id| event::actor_name(&conn, id))
+            .unwrap_or_else(|| "someone".to_string());
+        event::record(
+            &conn,
+            event::New::account(event::ACCOUNT_LOGIN_FAILED, &who, &email)
+                .actor_id(user_id)
+                .detail(serde_json::json!({ "ip": client_ip(&headers) })),
+        )
+    };
+
     let Some((user_id, password_hash, disabled_at)) = found else {
         // Still spend the hashing time so timing does not reveal existence.
         let _ = auth::verify_password(&req.password, DUMMY_HASH);
+        record_failure(None)?;
         return Err(rejected());
     };
     if !auth::verify_password(&req.password, &password_hash) {
+        record_failure(Some(&user_id))?;
         return Err(rejected());
     }
     if disabled_at.is_some() {
@@ -239,6 +272,16 @@ async fn login(
     clear_login_rate(&state, &bucket);
     let session = start_session(&conn, &user_id, &headers)?;
     let user = load_user(&conn, &user_id)?;
+    event::record_and_prune(
+        &state,
+        &conn,
+        event::New::account(event::ACCOUNT_LOGIN, &user.display_name, &email)
+            .actor_id(Some(&user_id))
+            .detail(serde_json::json!({
+                "ip": client_ip(&headers),
+                "user_agent": user_agent(&headers),
+            })),
+    )?;
     drop(conn);
 
     Ok((
@@ -258,6 +301,8 @@ async fn login(
 async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AppResult<Response> {
     {
         let conn = state.db();
+        // `end_session` records the sign-out itself, so both this route and the
+        // browse UI's form log it identically.
         auth::end_session(&conn, &headers)?;
     }
     Ok((
@@ -316,6 +361,16 @@ async fn create_invite(
             now(),
             expires_at
         ],
+    )?;
+    event::record(
+        &conn,
+        event::New::account(
+            event::INVITE_CREATE,
+            &event::actor_name(&conn, &actor.user_id),
+            "an invite code",
+        )
+        .by(&actor)
+        .detail(serde_json::json!({ "expires_at": expires_at })),
     )?;
     Ok(Json(InviteResponse { code, expires_at }))
 }
@@ -385,6 +440,21 @@ async fn create_token(
             expires_at
         ],
     )?;
+    event::record_and_prune(
+        &state,
+        &conn,
+        event::New::account(
+            event::TOKEN_CREATE,
+            &event::actor_name(&conn, &actor.user_id),
+            label,
+        )
+        .by(&actor)
+        .detail(serde_json::json!({
+            "token_id": minted.id,
+            "scopes": auth::parse_scopes(&scopes),
+            "project": req.project,
+        })),
+    )?;
 
     Ok((
         StatusCode::CREATED,
@@ -417,6 +487,16 @@ async fn revoke_token(
     let actor = auth::require_actor(&conn, &headers)?;
     actor.require_session()?;
 
+    // The label is read before the update so the event can name the token the
+    // way its owner does, not by its opaque id.
+    let label: Option<String> = conn
+        .query_row(
+            "SELECT label FROM token WHERE id = ?1 AND user_id = ?2 AND revoked_at IS NULL",
+            params![id, actor.user_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+
     let affected = conn.execute(
         "UPDATE token SET revoked_at = ?1
          WHERE id = ?2 AND user_id = ?3 AND revoked_at IS NULL",
@@ -425,6 +505,16 @@ async fn revoke_token(
     if affected == 0 {
         return Err(AppError::not_found("no such active token"));
     }
+    event::record(
+        &conn,
+        event::New::account(
+            event::TOKEN_REVOKE,
+            &event::actor_name(&conn, &actor.user_id),
+            label.as_deref().unwrap_or(&id),
+        )
+        .by(&actor)
+        .detail(serde_json::json!({ "token_id": id })),
+    )?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -480,12 +570,18 @@ fn claim_invite(conn: &Connection, code: &str) -> AppResult<String> {
     Ok(code_hash)
 }
 
-fn start_session(conn: &Connection, user_id: &str, headers: &HeaderMap) -> AppResult<String> {
-    let session = auth::mint_session()?;
-    let agent = headers
+/// The client's `User-Agent`, bounded. Shared by the session row and the
+/// activity log so both record the same thing.
+fn user_agent(headers: &HeaderMap) -> Option<String> {
+    headers
         .get(axum::http::header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.chars().take(200).collect::<String>());
+        .map(|s| s.chars().take(200).collect::<String>())
+}
+
+fn start_session(conn: &Connection, user_id: &str, headers: &HeaderMap) -> AppResult<String> {
+    let session = auth::mint_session()?;
+    let agent = user_agent(headers);
     conn.execute(
         "INSERT INTO session (id, user_id, created_at, expires_at, user_agent)
          VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -633,6 +729,16 @@ pub fn resolve_or_create_project(
         "INSERT INTO project (id, slug, owner_id, is_public, created_at)
          VALUES (?1, ?2, ?3, 0, ?4)",
         params![id, slug, actor.user_id, now()],
+    )?;
+    crate::event::record(
+        conn,
+        crate::event::New::project_scoped(
+            crate::event::PROJECT_CREATE,
+            &crate::event::actor_name(conn, &actor.user_id),
+            slug,
+        )
+        .by(actor)
+        .in_project(&id, slug),
     )?;
     Ok(id)
 }

@@ -2,6 +2,7 @@
 
 use rusqlite::Connection;
 use std::collections::HashMap;
+use std::sync::atomic::AtomicI64;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::blob::BlobStore;
@@ -14,6 +15,10 @@ pub struct AppState {
     pub blobs: BlobStore,
     /// Login attempt timestamps keyed by `<ip>|<email>`, for rate limiting.
     pub login_attempts: Mutex<HashMap<String, Vec<i64>>>,
+    /// When the activity log was last pruned. Retention is enforced from the
+    /// write path at most once an hour rather than by a background task: one
+    /// fewer moving part, and a server that never writes never needs to prune.
+    pub last_activity_prune: AtomicI64,
 }
 
 impl AppState {
@@ -24,6 +29,7 @@ impl AppState {
             db: Mutex::new(db),
             blobs,
             login_attempts: Mutex::new(HashMap::new()),
+            last_activity_prune: AtomicI64::new(0),
         }))
     }
 

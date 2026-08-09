@@ -23,6 +23,7 @@ use std::sync::Arc;
 use crate::account::{assert_token_project, resolve_or_create_project};
 use crate::auth::{self, Actor};
 use crate::error::{AppError, AppResult};
+use crate::event;
 use crate::state::AppState;
 use crate::util::{
     is_valid_digest, is_valid_file_path, is_valid_project_slug, is_valid_slug, new_id, now,
@@ -58,6 +59,7 @@ pub fn routes(max_blob_bytes: usize) -> Router<Arc<AppState>> {
         .route("/v1/revisions/{revision}/files/{*path}", get(get_file))
         .route("/v1/resources/{id}", get(get_resource))
         .route("/v1/resources/{id}/revisions", get(list_revisions))
+        .route("/v1/activity", get(list_activity))
 }
 
 // ------------------------------------------------------------------ payloads
@@ -484,6 +486,43 @@ fn seal_revision(
         params![revision_id, sealed, resource_id],
     )?;
 
+    // Sealing is the only moment a revision becomes visible, and both ingest
+    // paths end here — so this one call site covers every publish there is.
+    // `seq` tells first sight from a revision without a second query.
+    let (kind, slug, title): (String, String, String) = conn.query_row(
+        "SELECT kind, slug, title FROM resource WHERE id = ?1",
+        [&resource_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    let project_slug: String = conn.query_row(
+        "SELECT slug FROM project WHERE id = ?1",
+        [&project_id],
+        |r| r.get(0),
+    )?;
+    let mut detail = serde_json::json!({ "kind": kind, "slug": slug, "seq": seq });
+    if let Some(token_id) = actor.token_id() {
+        // A lane pushes under its own token; the row is attributed to the human
+        // who minted it, and says which token did the pushing.
+        detail["token_id"] = serde_json::Value::String(token_id.to_string());
+    }
+    event::record_and_prune(
+        state,
+        conn,
+        event::New::project_scoped(
+            if seq <= 1 {
+                event::RESOURCE_PUBLISH
+            } else {
+                event::RESOURCE_REVISE
+            },
+            &event::actor_name(conn, &actor.user_id),
+            &title,
+        )
+        .by(actor)
+        .in_project(&project_id, &project_slug)
+        .about_resource(&resource_id)
+        .detail(detail),
+    )?;
+
     Ok(CommitResponse {
         resource_id: resource_id.clone(),
         revision_id: revision_id.to_string(),
@@ -645,6 +684,56 @@ async fn list_projects(
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Json(rows))
+}
+
+#[derive(Deserialize)]
+pub struct ActivityQuery {
+    project: Option<String>,
+    kind: Option<String>,
+    /// Opaque keyset cursor from a previous response's `next_cursor`. Not a
+    /// timestamp: a second holds several events, so seconds cannot page.
+    cursor: Option<i64>,
+    limit: Option<i64>,
+}
+
+/// The activity feed as JSON (spec `docs/03-activity-feed.md`). Same visibility
+/// rules and same cursor as the `/activity` page, which reads through this
+/// module rather than duplicating the query.
+async fn list_activity(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<ActivityQuery>,
+) -> AppResult<Json<serde_json::Value>> {
+    let conn = state.db();
+    let actor = auth::authenticate(&conn, &headers)?;
+
+    if let Some(kind) = &query.kind {
+        if !event::KINDS.contains(&kind.as_str()) {
+            return Err(AppError::bad_request("invalid_kind", "unknown event kind"));
+        }
+    }
+
+    let limit = query.limit.unwrap_or(event::DEFAULT_LIMIT);
+    let events = event::query(
+        &conn,
+        actor.as_ref(),
+        &event::Query {
+            project: query.project.as_deref(),
+            kind: query.kind.as_deref(),
+            cursor: query.cursor,
+            limit,
+        },
+    )?;
+
+    // A full page means there may be more; a short one is the end. The cursor
+    // is the last row's `seq`, so the caller never has to compute it.
+    let next_cursor = (events.len() as i64 >= limit.clamp(1, event::MAX_LIMIT))
+        .then(|| events.last().map(|e| e.seq))
+        .flatten();
+
+    Ok(Json(
+        serde_json::json!({ "events": events, "next_cursor": next_cursor }),
+    ))
 }
 
 async fn list_resources(

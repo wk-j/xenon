@@ -60,6 +60,7 @@ when you paste it in.
 | `XENON_MAX_BLOB_MB` | `64` | per-file upload cap |
 | `XENON_ALLOW_SIGNUP` | `0` | `1` opens registration to anyone |
 | `XENON_INSECURE_COOKIES` | `0` | `1` drops `Secure` from the session cookie — local HTTP development only |
+| `XENON_ACTIVITY_RETENTION_DAYS` | `90` | how long `/activity` keeps a row; `0` keeps everything |
 
 There is deliberately **no admin token and no seeded admin password**, so there
 is no long-lived credential to leak from a compose file or shell history.

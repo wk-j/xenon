@@ -8,7 +8,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 pub fn open(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
@@ -58,6 +58,10 @@ fn migrate(conn: &Connection) -> Result<(), String> {
     if current < 1 {
         conn.execute_batch(SCHEMA_V1)
             .map_err(|e| format!("apply schema v1: {e}"))?;
+    }
+    if current < 2 {
+        conn.execute_batch(SCHEMA_V2)
+            .map_err(|e| format!("apply schema v2: {e}"))?;
     }
 
     conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
@@ -163,6 +167,36 @@ CREATE TABLE blob (
 );
 "#;
 
+/// v2 — the activity log (spec `docs/03-activity-feed.md`).
+///
+/// Every foreign key is `ON DELETE SET NULL` and every human-readable field is
+/// frozen at write time: a feed row has to still render after its project,
+/// resource, or account is gone. An append-only log that loses rows when
+/// something is deleted is not a log.
+///
+/// `audience` says where visibility comes from, not what it is — `project` rows
+/// follow their project's current `is_public`, `account` rows are for their own
+/// user (and an admin). Deciding it on read rather than freezing a flag is the
+/// one place this diverges from Gitea's `action` table; see the spec.
+const SCHEMA_V2: &str = r#"
+CREATE TABLE event (
+    id           TEXT PRIMARY KEY,
+    kind         TEXT NOT NULL,
+    audience     TEXT NOT NULL,
+    actor_id     TEXT REFERENCES user(id) ON DELETE SET NULL,
+    actor_name   TEXT NOT NULL,
+    project_id   TEXT REFERENCES project(id) ON DELETE SET NULL,
+    project_slug TEXT,
+    resource_id  TEXT REFERENCES resource(id) ON DELETE SET NULL,
+    subject      TEXT NOT NULL,
+    detail       TEXT NOT NULL DEFAULT '{}',
+    created_at   INTEGER NOT NULL
+);
+CREATE INDEX event_time_idx    ON event(created_at DESC);
+CREATE INDEX event_project_idx ON event(project_id, created_at DESC);
+CREATE INDEX event_actor_idx   ON event(actor_id, created_at DESC);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,8 +217,9 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        // user, session, invite, token, project, resource, revision, rev_file, blob
-        assert_eq!(tables, 9, "expected the 9 schema tables");
+        // user, session, invite, token, project, resource, revision, rev_file,
+        // blob, event
+        assert_eq!(tables, 10, "expected the 10 schema tables");
     }
 
     #[test]

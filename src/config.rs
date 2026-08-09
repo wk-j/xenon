@@ -22,9 +22,14 @@ pub struct Config {
     /// Set XENON_INSECURE_COOKIES=1 for local HTTP development. In production
     /// the cookie is always `Secure`.
     pub insecure_cookies: bool,
+    /// How long the activity log keeps a row, in days. `0` keeps everything.
+    pub activity_retention_days: i64,
 }
 
 const DEFAULT_MAX_BLOB_MB: u64 = 64;
+/// GitHub's events API keeps 30 days. A fleet log is read in weeks rather than
+/// days, and 90 days of these rows is kilobytes.
+const DEFAULT_ACTIVITY_RETENTION_DAYS: i64 = 90;
 
 impl Config {
     pub fn from_env() -> Result<Self, String> {
@@ -45,6 +50,16 @@ impl Config {
             return Err("XENON_MAX_BLOB_MB must be greater than zero".to_string());
         }
 
+        let activity_retention_days = env_parse(
+            "XENON_ACTIVITY_RETENTION_DAYS",
+            DEFAULT_ACTIVITY_RETENTION_DAYS,
+        )?;
+        if activity_retention_days < 0 {
+            return Err(
+                "XENON_ACTIVITY_RETENTION_DAYS must be 0 or more (0 keeps everything)".to_string(),
+            );
+        }
+
         Ok(Self {
             port,
             data_dir,
@@ -52,6 +67,7 @@ impl Config {
             max_blob_bytes: max_blob_mb * 1024 * 1024,
             allow_signup: env_flag("XENON_ALLOW_SIGNUP"),
             insecure_cookies: env_flag("XENON_INSECURE_COOKIES"),
+            activity_retention_days,
         })
     }
 
@@ -74,6 +90,7 @@ impl Config {
             max_blob_bytes: 1024 * 1024,
             allow_signup: false,
             insecure_cookies: true,
+            activity_retention_days: DEFAULT_ACTIVITY_RETENTION_DAYS,
         }
     }
 }

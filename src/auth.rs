@@ -104,6 +104,16 @@ impl Actor {
         }
     }
 
+    /// Which token authenticated this request, if one did. Recorded on activity
+    /// rows so a machine push is attributable to the credential behind it, not
+    /// just to the human who owns it.
+    pub fn token_id(&self) -> Option<&str> {
+        match &self.via {
+            AuthVia::Session => None,
+            AuthVia::Token { token_id, .. } => Some(token_id),
+        }
+    }
+
     pub fn require_scope(&self, scope: &'static str) -> AppResult<()> {
         if self.has_scope(scope) {
             return Ok(());
@@ -244,15 +254,38 @@ pub fn clear_session_cookie(insecure: bool) -> String {
     session_cookie("", insecure, 0)
 }
 
-/// Delete the session this request's cookie points at, if it has one. Shared by
-/// the JSON logout endpoint and the browse UI's sign-out form so both mean the
-/// same thing by "signed out" — the row goes, not just the cookie, so a copied
-/// cookie value is dead too.
+/// Delete the session this request's cookie points at, if it has one, and
+/// record the sign-out. Shared by the JSON logout endpoint and the browse UI's
+/// sign-out form so both mean the same thing by "signed out" — the row goes,
+/// not just the cookie, so a copied cookie value is dead too.
+///
+/// The activity row is written here rather than in the two handlers for the
+/// same reason: a sign-out that is only logged on one of two routes is worse
+/// than one that is not logged at all, because the gap is invisible.
 pub fn end_session(conn: &Connection, headers: &HeaderMap) -> AppResult<()> {
-    if let Some(value) = read_cookie(headers, SESSION_COOKIE) {
-        conn.execute(
-            "DELETE FROM session WHERE id = ?1",
-            [sha256_hex(value.as_bytes())],
+    let Some(value) = read_cookie(headers, SESSION_COOKIE) else {
+        return Ok(());
+    };
+    let session_id = sha256_hex(value.as_bytes());
+
+    // Who it was has to be read before the row is gone.
+    let user: Option<(String, String, String)> = conn
+        .query_row(
+            "SELECT u.id, u.display_name, u.email
+             FROM session s JOIN user u ON u.id = s.user_id
+             WHERE s.id = ?1",
+            [&session_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+
+    conn.execute("DELETE FROM session WHERE id = ?1", [&session_id])?;
+
+    if let Some((user_id, display_name, email)) = user {
+        crate::event::record(
+            conn,
+            crate::event::New::account(crate::event::ACCOUNT_LOGOUT, &display_name, &email)
+                .actor_id(Some(&user_id)),
         )?;
     }
     Ok(())

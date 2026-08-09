@@ -29,7 +29,8 @@
     <h3><a href="/r/{{ project }}/{{ r.kind }}/{{ r.slug }}">{{ r.title }}</a></h3>
     <div class="meta">
       <span class="pill k k--{{ r.kind }}">{{ r.kind }}</span>
-      {{ r.slug }} · {{ r.revisions }} rev · updated {{ r.updated_at }}
+      {{ r.slug }} · {{ r.revisions }} rev ·
+      updated <time title="{{ r.updated_exact }}">{{ r.updated }}</time>
     </div>
   </div>
   {%- endfor %}

@@ -155,6 +155,27 @@ computed server-side from the decoded bytes.
 | `GET /v1/resources/{id}/revisions` | sealed revisions, newest first |
 | `GET /v1/revisions/{rev}/files/{path}` | raw bytes |
 | `GET /healthz` | `ok` |
+| `GET /v1/activity?project=&kind=&cursor=&limit=` | the activity log the caller may see, newest first |
+
+### `GET /v1/activity`
+
+`{ "events": [ { id, seq, kind, actor, project, resource_id, url, subject, detail, created_at } ],
+"next_cursor": <int|null> }`
+
+`cursor` is opaque and comes from the previous response's `next_cursor` — **not** a timestamp.
+Timestamps are seconds and a single push writes two events inside one, so seconds cannot page;
+the cursor is insert order, which is both the true order of a log and strictly monotonic.
+`next_cursor` is null on the last page. `limit` is 1..100, default 30.
+
+Rows are one of two audiences. A `project` row (`resource.publish`, `resource.revise`,
+`project.create`) is visible when its project is public or the caller owns it. An `account` row
+(`account.register` · `login` · `login_failed` · `logout`, `token.create` · `token.revoke`,
+`invite.create` · `invite.claim`) is visible only to its own actor, and to an admin. A failed
+sign-in against an unknown email has no actor at all, so only an admin ever sees it — attaching it
+to an account would rebuild the existence oracle `register` refuses to be.
+
+Reads are not recorded; see `docs/03-activity-feed.md`. Rows older than
+`XENON_ACTIVITY_RETENTION_DAYS` (default 90, `0` = forever) are pruned from the write path.
 
 Read needs `resource:read` (or a session, or a public project). Uncommitted
 revisions are invisible to every read route.
@@ -167,7 +188,8 @@ agent-authored and untrusted.
 
 `/` projects · `/p/<project>` resources, filterable by kind ·
 `/r/<project>/<kind>/<slug>` the resource · `/r/<project>/<kind>/<slug>/@<seq>`
-a pinned revision · `/register` · `/login` · `POST /logout` · `/settings/tokens`.
+a pinned revision · `/activity` the feed · `/register` · `/login` · `POST /logout` ·
+`/settings/tokens`.
 
 `/settings/tokens` is the one private page: without a session it answers `303`
 to `/login` rather than rendering a shell its script would then have to empty.

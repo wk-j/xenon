@@ -1674,3 +1674,317 @@ async fn a_second_push_appends_a_revision_and_leaves_the_first_intact() {
         "no phantom revision"
     );
 }
+
+// ------------------------------------------------------------------ activity
+
+/// Every publish leaves exactly one row, and a second push of *changed* content
+/// is a revision rather than a second publish. A no-op push leaves nothing —
+/// re-running `#push` has to be a no-op in the feed as well as on disk.
+#[tokio::test]
+async fn publishing_records_publish_then_revise_and_nothing_for_a_no_op() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(&session, json!(["resource:write", "resource:read"]))
+        .await;
+
+    async fn push(server: &Server, token: &str, body: &str) {
+        server
+            .post(
+                "/v1/projects/krypton/resources:inline",
+                Some(token),
+                json!({
+                    "kind": "review",
+                    "slug": "2026-08-09-a",
+                    "title": "a board",
+                    "contents": [{
+                        "path": "review.md",
+                        "content_base64": data_encoding::BASE64.encode(body.as_bytes()),
+                        "content_type": "text/markdown",
+                    }],
+                }),
+            )
+            .await;
+    }
+
+    push(&server, &token, "# v1\n").await;
+    push(&server, &token, "# v2\n").await;
+    push(&server, &token, "# v2\n").await; // unchanged — must not appear
+
+    let feed = server
+        .get("/v1/activity", Some(&session_header(&session)))
+        .await;
+    let kinds: Vec<&str> = feed.body["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "resource.revise",
+            "resource.publish",
+            "project.create",
+            "token.create",
+            "account.register"
+        ],
+        "newest first, and the unchanged push adds nothing"
+    );
+
+    let publish = feed.body["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "resource.publish")
+        .unwrap();
+    assert_eq!(publish["subject"], "a board");
+    assert_eq!(publish["project"], "krypton");
+    assert_eq!(publish["url"], "/r/krypton/review/2026-08-09-a");
+    assert_eq!(
+        publish["detail"]["kind"], "review",
+        "the resource kind rides along so the feed can colour the row"
+    );
+    assert!(
+        publish["detail"]["token_id"].is_string(),
+        "a machine push names the token behind it: {publish}"
+    );
+}
+
+/// The visibility predicate, end to end: a private project's rows belong to its
+/// owner, and one account's security rows are never another account's business.
+#[tokio::test]
+async fn the_feed_shows_each_caller_only_what_they_may_see() {
+    let server = Server::start_with(|c| c.allow_signup = true);
+    let owner = server.register_first().await;
+    let owner_token = server
+        .mint_token(&owner, json!(["resource:write", "resource:read"]))
+        .await;
+    server
+        .post(
+            "/v1/projects/krypton/resources:inline",
+            Some(&owner_token),
+            json!({
+                "kind": "doc",
+                "slug": "docs/a.md",
+                "title": "private doc",
+                "contents": [],
+            }),
+        )
+        .await;
+
+    let intruder_res = server
+        .post(
+            "/v1/auth/register",
+            None,
+            json!({ "email": "other@example.com", "password": "another long password" }),
+        )
+        .await;
+    let intruder = cookie_value(&intruder_res);
+
+    let subjects = |body: &Value| -> Vec<String> {
+        body["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| format!("{}:{}", e["kind"].as_str().unwrap(), e["subject"]))
+            .collect()
+    };
+
+    let theirs = server
+        .get("/v1/activity", Some(&session_header(&intruder)))
+        .await;
+    let seen = subjects(&theirs.body);
+    assert!(
+        seen.iter().all(|s| s.starts_with("account.register")),
+        "a second user sees only their own registration: {seen:?}"
+    );
+
+    let anonymous = server.get("/v1/activity", None).await;
+    assert!(
+        anonymous.body["events"].as_array().unwrap().is_empty(),
+        "nothing here is public: {:?}",
+        anonymous.body
+    );
+
+    let mine = server
+        .get("/v1/activity", Some(&session_header(&owner)))
+        .await;
+    assert!(
+        subjects(&mine.body)
+            .iter()
+            .any(|s| s.contains("private doc")),
+        "the owner still sees their own private-project row"
+    );
+}
+
+/// A failed sign-in is recorded, and an attempt against an email nobody owns
+/// belongs to nobody — otherwise the feed becomes the account-existence oracle
+/// that the login endpoint refuses to be.
+#[tokio::test]
+async fn a_failed_sign_in_is_recorded_without_naming_an_account() {
+    let server = Server::start();
+    let session = server.register_first().await;
+
+    let wrong = server
+        .post(
+            "/v1/auth/login",
+            None,
+            json!({ "email": "wk@example.com", "password": "not the password" }),
+        )
+        .await;
+    assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
+
+    let ghost = server
+        .post(
+            "/v1/auth/login",
+            None,
+            json!({ "email": "ghost@example.com", "password": "not the password" }),
+        )
+        .await;
+    assert_eq!(ghost.status, StatusCode::UNAUTHORIZED);
+
+    // The first account is the admin, so it sees both — its own failure and the
+    // orphaned one.
+    let feed = server
+        .get(
+            "/v1/activity?kind=account.login_failed",
+            Some(&session_header(&session)),
+        )
+        .await;
+    let events = feed.body["events"].as_array().unwrap();
+    assert_eq!(events.len(), 2, "{:?}", feed.body);
+    assert!(
+        events.iter().any(|e| e["subject"] == "ghost@example.com"),
+        "the attempted address is kept for the admin: {events:?}"
+    );
+    assert!(
+        events.iter().all(|e| e["detail"]["ip"].is_string()),
+        "where it came from is the point of the row"
+    );
+}
+
+/// The page renders, groups by day, and pages with a cursor that neither
+/// repeats nor skips a row.
+#[tokio::test]
+async fn the_activity_page_renders_and_pages() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(&session, json!(["resource:write", "resource:read"]))
+        .await;
+
+    for i in 0..3 {
+        server
+            .post(
+                "/v1/projects/krypton/resources:inline",
+                Some(&token),
+                json!({
+                    "kind": "artifact",
+                    "slug": format!("lane/a{i}"),
+                    "title": format!("artifact {i}"),
+                    "contents": [],
+                }),
+            )
+            .await;
+    }
+
+    let (status, html) = server.get_html("/activity", Some(&session)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("feed__day\">today"), "day heading: {html}");
+    assert!(html.contains("artifact 2"), "{html}");
+    assert!(
+        html.contains("k--artifact"),
+        "a resource row wears its kind hue: {html}"
+    );
+    assert!(
+        html.contains("/r/krypton/artifact/lane/a2"),
+        "rows link to what they are about: {html}"
+    );
+
+    // Page 2 starts strictly older than the last row of page 1.
+    let first = server
+        .get("/v1/activity?limit=2", Some(&session_header(&session)))
+        .await;
+    let cursor = first.body["next_cursor"].as_i64().expect("a cursor");
+    let second = server
+        .get(
+            &format!("/v1/activity?limit=2&cursor={cursor}"),
+            Some(&session_header(&session)),
+        )
+        .await;
+    let ids: Vec<&str> = first.body["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(second.body["events"].as_array().unwrap())
+        .map(|e| e["id"].as_str().unwrap())
+        .collect();
+    let unique: std::collections::HashSet<&&str> = ids.iter().collect();
+    assert_eq!(
+        ids.len(),
+        unique.len(),
+        "a page must not repeat a row: {ids:?}"
+    );
+
+    // An unknown kind is rejected at the edge rather than silently ignored.
+    let bad = server
+        .get(
+            "/v1/activity?kind=nonsense",
+            Some(&session_header(&session)),
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+}
+
+/// Signing out and revoking a token are the two account events a reader is most
+/// likely to go looking for, so both must actually land.
+#[tokio::test]
+async fn signing_out_and_revoking_a_token_are_recorded() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let created = server
+        .post(
+            "/v1/tokens",
+            Some(&session_header(&session)),
+            json!({ "label": "laptop", "scopes": ["resource:read"] }),
+        )
+        .await;
+    let id = created.s("id");
+
+    server
+        .send(
+            Request::delete(format!("/v1/tokens/{id}"))
+                .header(header::COOKIE, format!("xenon_session={session}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    server.post_web("/logout", Some(&session)).await;
+
+    // The session is gone, so read the log back as a fresh one.
+    let again = server
+        .post(
+            "/v1/auth/login",
+            None,
+            json!({ "email": "wk@example.com", "password": "correct horse battery" }),
+        )
+        .await;
+    let session = cookie_value(&again);
+    let feed = server
+        .get("/v1/activity", Some(&session_header(&session)))
+        .await;
+    let events = feed.body["events"].as_array().unwrap();
+    let revoke = events
+        .iter()
+        .find(|e| e["kind"] == "token.revoke")
+        .unwrap_or_else(|| panic!("no revoke row: {events:?}"));
+    assert_eq!(
+        revoke["subject"], "laptop",
+        "a token is named the way its owner named it"
+    );
+    assert!(
+        events.iter().any(|e| e["kind"] == "account.logout"),
+        "no logout row: {events:?}"
+    );
+}

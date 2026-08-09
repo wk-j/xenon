@@ -27,6 +27,9 @@
       and a `tokens` link that bounced an anonymous reader straight back. -#}
   <nav>
     <a href="/">projects</a>
+    {#- Activity is visible to everyone: an anonymous visitor to a public
+        instance sees the public slice of it. -#}
+    <a href="/activity">activity</a>
     {%- if nav.signed_in %}
     <a href="/settings/tokens">tokens</a>
     <span class="top__who">{{ nav.who }}</span>
