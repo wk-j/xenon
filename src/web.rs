@@ -166,6 +166,7 @@ struct ResourceTemplate {
     app_js_url: String,
     crumbs: Vec<Crumb>,
     nav: Nav,
+    byline: Option<Byline>,
     project: String,
     kind: String,
     slug: String,
@@ -180,6 +181,18 @@ struct FileTab {
     path: String,
     href: String,
     selected: bool,
+}
+
+/// Who uploaded the revision being read, in decreasing order of how much the
+/// server can vouch for it. `who` and `token` are authenticated; `claimed` is
+/// what the pushing client said about itself and is rendered as such — the
+/// whole point of the split is that the page never presents an assertion with
+/// the same weight as a verification.
+struct Byline {
+    who: String,
+    token: Option<String>,
+    token_revoked: bool,
+    claimed: Option<String>,
 }
 
 struct ProjectCard {
@@ -575,6 +588,7 @@ async fn resource_page(
             app_js_url,
             crumbs,
             nav,
+            byline: None,
             project,
             kind: detail.summary.kind,
             slug: detail.summary.slug,
@@ -622,6 +636,7 @@ async fn resource_page(
         app_js_url,
         crumbs,
         nav,
+        byline: byline_for(&revision),
         project,
         kind: detail.summary.kind,
         slug: detail.summary.slug,
@@ -630,6 +645,46 @@ async fn resource_page(
         pinned: seq.is_some(),
         files,
         content,
+    })
+}
+
+/// Build the byline for a revision, keeping the verified and the claimed halves
+/// apart. `meta.lane` and `origin.hostname` both come from the pushing client,
+/// so they are folded into one muted "claimed" phrase rather than sitting
+/// beside the account as if the server had checked them.
+fn byline_for(revision: &crate::api::RevisionDetail) -> Option<Byline> {
+    let author = revision.author.as_ref();
+    let lane = revision
+        .meta
+        .get("lane")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty());
+    let host = revision
+        .origin
+        .get("hostname")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty());
+    let claimed = match (lane, host) {
+        (Some(lane), Some(host)) => Some(format!("{lane} from {host}")),
+        (Some(lane), None) => Some(lane.to_string()),
+        (None, Some(host)) => Some(format!("from {host}")),
+        (None, None) => None,
+    };
+
+    // An item whose account was deleted still says so, rather than quietly
+    // looking like nobody ever uploaded it.
+    let who = author
+        .map(|a| a.name.clone())
+        .unwrap_or_else(|| "(deleted account)".to_string());
+
+    if author.is_none() && claimed.is_none() {
+        return None;
+    }
+    Some(Byline {
+        who,
+        token: author.and_then(|a| a.token_label.clone()),
+        token_revoked: author.is_some_and(|a| a.token_revoked),
+        claimed,
     })
 }
 

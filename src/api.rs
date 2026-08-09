@@ -153,6 +153,8 @@ pub struct ResourceDetail {
     #[serde(flatten)]
     pub summary: ResourceSummary,
     pub project: String,
+    /// Who published the head revision, whichever revision is being read.
+    pub last_author: Option<Author>,
     pub revision: Option<RevisionDetail>,
 }
 
@@ -164,7 +166,68 @@ pub struct RevisionDetail {
     pub sealed_at: Option<i64>,
     pub meta: serde_json::Value,
     pub origin: serde_json::Value,
+    /// Who the server authenticated for this upload. `None` only when the
+    /// account has since been deleted.
+    pub author: Option<Author>,
     pub files: Vec<FileEntry>,
+}
+
+/// The verified half of an upload's identity. `origin` beside it is the
+/// unverified half — whatever the client said about itself — and the two are
+/// never merged.
+///
+/// Joined live rather than frozen into the row, which is the opposite of the
+/// activity log: an event records what happened at a moment, while an item's
+/// author is a pointer to an account that can be renamed. A rename should
+/// follow the person's items and leave the history of what they did alone.
+#[derive(Debug, Clone, Serialize)]
+pub struct Author {
+    pub name: String,
+    /// How the human named the machine that pushed ("krypton on this laptop").
+    /// `None` for a session-authenticated push and for pre-v3 rows.
+    pub token_label: Option<String>,
+    pub token_revoked: bool,
+}
+
+/// Resolve a revision's author. A missing user row is not an error: the item
+/// still exists and still has a history, it just lost the name behind it.
+pub fn load_author(
+    conn: &Connection,
+    author_id: Option<&str>,
+    token_id: Option<&str>,
+) -> AppResult<Option<Author>> {
+    let Some(author_id) = author_id else {
+        return Ok(None);
+    };
+    let name: Option<String> = conn
+        .query_row(
+            "SELECT display_name FROM user WHERE id = ?1",
+            [author_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(name) = name else {
+        return Ok(None);
+    };
+
+    // A revoked token still names itself: it says who pushed this *then*, and
+    // hiding it would be deleting the part of the story that matters most.
+    let token: Option<(String, Option<i64>)> = match token_id {
+        None => None,
+        Some(id) => conn
+            .query_row(
+                "SELECT label, revoked_at FROM token WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?,
+    };
+
+    Ok(Some(Author {
+        name,
+        token_label: token.as_ref().map(|(label, _)| label.clone()),
+        token_revoked: token.is_some_and(|(_, revoked)| revoked.is_some()),
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -391,10 +454,23 @@ fn open_revision(
         |r| r.get(0),
     )?;
     let revision_id = new_id("rev_").map_err(AppError::internal)?;
+    // Authorship is written here, where the row is created, rather than at seal
+    // time: a revision that never seals still says who started it, which is the
+    // first thing worth knowing about an upload that is stuck.
     conn.execute(
-        "INSERT INTO revision (id, resource_id, seq, meta, origin, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![revision_id, resource_id, seq, meta_json, origin_json, now()],
+        "INSERT INTO revision
+           (id, resource_id, seq, meta, origin, created_at, author_id, author_token_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            revision_id,
+            resource_id,
+            seq,
+            meta_json,
+            origin_json,
+            now(),
+            actor.user_id,
+            actor.token_id(),
+        ],
     )?;
 
     let mut missing = Vec::new();
@@ -820,23 +896,41 @@ async fn list_revisions(
     let (_, project_id) = resource_row(&conn, &id)?;
     assert_project_readable(&conn, actor.as_ref(), &project_id)?;
 
+    // This list is exactly the "who changed this, when" view, so it carries the
+    // author per row. The join is done per row rather than in SQL because the
+    // token half needs its own lookup and a resource has a handful of revisions,
+    // not thousands.
     let mut stmt = conn.prepare(
-        "SELECT id, seq, created_at, sealed_at, origin FROM revision
+        "SELECT id, seq, created_at, sealed_at, origin, author_id, author_token_id
+         FROM revision
          WHERE resource_id = ?1 AND sealed_at IS NOT NULL ORDER BY seq DESC",
     )?;
-    let rows = stmt
+    let raw = stmt
         .query_map([&id], |r| {
-            Ok(serde_json::json!({
-                "id": r.get::<_, String>(0)?,
-                "seq": r.get::<_, i64>(1)?,
-                "created_at": r.get::<_, i64>(2)?,
-                "sealed_at": r.get::<_, Option<i64>>(3)?,
-                "origin": serde_json::from_str::<serde_json::Value>(
-                    &r.get::<_, String>(4)?
-                ).unwrap_or(serde_json::Value::Null),
-            }))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, Option<String>>(6)?,
+            ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
+
+    let mut rows = Vec::with_capacity(raw.len());
+    for (rev_id, seq, created_at, sealed_at, origin, author_id, token_id) in raw {
+        rows.push(serde_json::json!({
+            "id": rev_id,
+            "seq": seq,
+            "created_at": created_at,
+            "sealed_at": sealed_at,
+            "origin": serde_json::from_str::<serde_json::Value>(&origin)
+                .unwrap_or(serde_json::Value::Null),
+            "author": load_author(&conn, author_id.as_deref(), token_id.as_deref())?,
+        }));
+    }
     Ok(Json(rows))
 }
 
@@ -1017,6 +1111,21 @@ pub fn load_resource_detail(
     let (_, project_id) = resource_row(conn, &id)?;
     assert_project_readable(conn, actor, &project_id)?;
 
+    // Who last touched the resource, whichever revision is being read. A caller
+    // pinned to revision 1 still wants to know that revision 4 exists and who
+    // made it, without fetching it.
+    let last_author = match &head {
+        None => None,
+        Some(head_id) => {
+            let (author_id, token_id): (Option<String>, Option<String>) = conn.query_row(
+                "SELECT author_id, author_token_id FROM revision WHERE id = ?1",
+                [head_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            load_author(conn, author_id.as_deref(), token_id.as_deref())?
+        }
+    };
+
     let revision_id = match seq {
         None => head,
         Some(seq) => conn
@@ -1051,19 +1160,41 @@ pub fn load_resource_detail(
             revisions,
         },
         project,
+        last_author,
         revision,
     })
 }
 
 pub fn load_revision(conn: &Connection, revision_id: &str) -> AppResult<RevisionDetail> {
-    let (seq, created_at, sealed_at, meta, origin): (i64, i64, Option<i64>, String, String) = conn
+    #[allow(clippy::type_complexity)]
+    let (seq, created_at, sealed_at, meta, origin, author_id, token_id): (
+        i64,
+        i64,
+        Option<i64>,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+    ) = conn
         .query_row(
-            "SELECT seq, created_at, sealed_at, meta, origin FROM revision WHERE id = ?1",
+            "SELECT seq, created_at, sealed_at, meta, origin, author_id, author_token_id
+             FROM revision WHERE id = ?1",
             [revision_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            },
         )
         .optional()?
         .ok_or_else(|| AppError::not_found("no such revision"))?;
+    let author = load_author(conn, author_id.as_deref(), token_id.as_deref())?;
 
     let mut stmt = conn.prepare(
         "SELECT path, sha256, size, content_type FROM rev_file
@@ -1087,6 +1218,7 @@ pub fn load_revision(conn: &Connection, revision_id: &str) -> AppResult<Revision
         sealed_at,
         meta: serde_json::from_str(&meta).unwrap_or(serde_json::Value::Null),
         origin: serde_json::from_str(&origin).unwrap_or(serde_json::Value::Null),
+        author,
         files,
     })
 }

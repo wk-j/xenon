@@ -8,7 +8,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 pub fn open(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
@@ -62,6 +62,10 @@ fn migrate(conn: &Connection) -> Result<(), String> {
     if current < 2 {
         conn.execute_batch(SCHEMA_V2)
             .map_err(|e| format!("apply schema v2: {e}"))?;
+    }
+    if current < 3 {
+        conn.execute_batch(SCHEMA_V3)
+            .map_err(|e| format!("apply schema v3: {e}"))?;
     }
 
     conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
@@ -197,6 +201,29 @@ CREATE INDEX event_project_idx ON event(project_id, created_at DESC);
 CREATE INDEX event_actor_idx   ON event(actor_id, created_at DESC);
 "#;
 
+/// v3 — who uploaded each revision (spec `docs/04-upload-authorship.md`).
+///
+/// Stored beside `origin`, never merged into it: `origin` is whatever the
+/// pushing client claimed about itself, while these two columns are who the
+/// server authenticated. Presenting them as one fact would launder an assertion
+/// into a verification.
+///
+/// The backfill is a fact being written down, not a default being invented:
+/// `account::resolve_or_create_project` has always answered 404 to anyone but
+/// the project's owner, so every pre-v3 revision was pushed by that owner.
+/// `author_token_id` stays NULL there because the credential genuinely was
+/// never recorded — NULL means "not recorded", never "unknown human".
+const SCHEMA_V3: &str = r#"
+ALTER TABLE revision ADD COLUMN author_id       TEXT REFERENCES user(id)  ON DELETE SET NULL;
+ALTER TABLE revision ADD COLUMN author_token_id TEXT REFERENCES token(id) ON DELETE SET NULL;
+CREATE INDEX revision_author_idx ON revision(author_id);
+
+UPDATE revision SET author_id = (
+    SELECT p.owner_id FROM resource r JOIN project p ON p.id = r.project_id
+    WHERE r.id = revision.resource_id
+) WHERE author_id IS NULL;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,6 +247,45 @@ mod tests {
         // user, session, invite, token, project, resource, revision, rev_file,
         // blob, event
         assert_eq!(tables, 10, "expected the 10 schema tables");
+    }
+
+    /// Upgrading a database written before v3 must attribute every existing
+    /// revision to its project's owner. That is not a guess: pushing has always
+    /// been owner-only, so the owner provably is the uploader.
+    #[test]
+    fn v3_backfills_authorship_for_revisions_pushed_before_it_existed() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.execute_batch("PRAGMA user_version = 2").unwrap();
+
+        conn.execute_batch(
+            "INSERT INTO user (id, email, display_name, password_hash, created_at)
+               VALUES ('u1','a@example.com','wk','h',0);
+             INSERT INTO project (id, slug, owner_id, is_public, created_at)
+               VALUES ('p1','wk-j.krypton','u1',0,0);
+             INSERT INTO resource (id, project_id, kind, slug, title, created_at, updated_at)
+               VALUES ('res1','p1','review','a','a board',0,0);
+             INSERT INTO revision (id, resource_id, seq, meta, origin, created_at, sealed_at)
+               VALUES ('rev1','res1',1,'{}','{}',0,1);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let (author, token): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT author_id, author_token_id FROM revision WHERE id = 'rev1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(author.as_deref(), Some("u1"));
+        assert_eq!(
+            token, None,
+            "the credential was never recorded, so it stays unrecorded rather than invented"
+        );
     }
 
     #[test]

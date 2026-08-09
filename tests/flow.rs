@@ -1988,3 +1988,175 @@ async fn signing_out_and_revoking_a_token_are_recorded() {
         "no logout row: {events:?}"
     );
 }
+
+// --------------------------------------------------------------- authorship
+
+/// Every upload carries the account and the credential the server
+/// authenticated, per revision — and the page shows the verified half apart
+/// from what the client merely claimed about itself.
+#[tokio::test]
+async fn each_upload_records_who_pushed_it_and_with_which_token() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let laptop = server
+        .post(
+            "/v1/tokens",
+            Some(&session_header(&session)),
+            json!({ "label": "krypton on this laptop", "scopes": ["resource:write", "resource:read"] }),
+        )
+        .await;
+    let laptop_token = laptop.s("token");
+
+    async fn push(server: &Server, token: &str, body: &str, lane: &str) -> Res {
+        server
+            .post(
+                "/v1/projects/krypton/resources:inline",
+                Some(token),
+                json!({
+                    "kind": "review",
+                    "slug": "2026-08-09-a",
+                    "title": "a board",
+                    "meta": { "lane": lane },
+                    "origin": { "hostname": "macbook" },
+                    "contents": [{
+                        "path": "review.md",
+                        "content_base64": data_encoding::BASE64.encode(body.as_bytes()),
+                        "content_type": "text/markdown",
+                    }],
+                }),
+            )
+            .await
+    }
+
+    let first = push(&server, &laptop_token, "# v1\n", "Claude-1").await;
+    let resource_id = first.s("resource_id");
+
+    let detail = server
+        .get(
+            &format!("/v1/resources/{resource_id}"),
+            Some(&session_header(&session)),
+        )
+        .await;
+    assert_eq!(detail.body["revision"]["author"]["name"], "wk");
+    assert_eq!(
+        detail.body["revision"]["author"]["token_label"], "krypton on this laptop",
+        "the credential names the machine: {:?}",
+        detail.body["revision"]
+    );
+    assert_eq!(detail.body["revision"]["author"]["token_revoked"], false);
+    assert_eq!(
+        detail.body["last_author"]["name"], "wk",
+        "the resource says who last touched it without a second fetch"
+    );
+
+    // A second machine revises it. Each revision keeps its own pusher.
+    let desktop = server
+        .post(
+            "/v1/tokens",
+            Some(&session_header(&session)),
+            json!({ "label": "the desktop", "scopes": ["resource:write", "resource:read"] }),
+        )
+        .await;
+    push(&server, &desktop.s("token"), "# v2\n", "Claude-2").await;
+
+    let revisions = server
+        .get(
+            &format!("/v1/resources/{resource_id}/revisions"),
+            Some(&session_header(&session)),
+        )
+        .await;
+    let rows = revisions.body.as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["author"]["token_label"], "the desktop");
+    assert_eq!(
+        rows[1]["author"]["token_label"], "krypton on this laptop",
+        "revision 1 keeps the token that actually pushed it"
+    );
+
+    // The page shows the verified half in its own voice, and the client's own
+    // claims marked as claims.
+    let (status, html) = server
+        .get_html("/r/krypton/review/2026-08-09-a", Some(&session))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("byline__who\">wk"), "{html}");
+    assert!(html.contains("the desktop"), "{html}");
+    assert!(
+        html.contains("Claude-2 from macbook"),
+        "lane and host belong in the byline: {html}"
+    );
+    assert!(
+        html.contains("not verified"),
+        "the claimed half must say it is a claim: {html}"
+    );
+}
+
+/// A revoked token still names itself on what it pushed. The revocation is part
+/// of the story, not a reason to erase who did the work.
+#[tokio::test]
+async fn a_revoked_token_still_names_itself_on_its_uploads() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let minted = server
+        .post(
+            "/v1/tokens",
+            Some(&session_header(&session)),
+            json!({ "label": "retired laptop", "scopes": ["resource:write"] }),
+        )
+        .await;
+
+    server
+        .post(
+            "/v1/projects/krypton/resources:inline",
+            Some(&minted.s("token")),
+            json!({ "kind": "doc", "slug": "docs/a.md", "title": "a doc", "contents": [] }),
+        )
+        .await;
+    server
+        .send(
+            Request::delete(format!("/v1/tokens/{}", minted.s("id")))
+                .header(header::COOKIE, format!("xenon_session={session}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+    let (_, html) = server
+        .get_html("/r/krypton/doc/docs/a.md", Some(&session))
+        .await;
+    assert!(
+        html.contains("retired laptop (revoked)"),
+        "a revoked token keeps its name and is marked: {html}"
+    );
+}
+
+/// A push authenticated by a session (a human with curl and a cookie, not a
+/// machine) records the account and no token. NULL means "not recorded", which
+/// is exactly what happened.
+#[tokio::test]
+async fn a_session_push_records_the_account_and_no_token() {
+    let server = Server::start();
+    let session = server.register_first().await;
+
+    let ack = server
+        .post(
+            "/v1/projects/krypton/resources:inline",
+            Some(&session_header(&session)),
+            json!({ "kind": "doc", "slug": "docs/b.md", "title": "by hand", "contents": [] }),
+        )
+        .await;
+    assert_eq!(ack.status, StatusCode::CREATED, "{:?}", ack.body);
+
+    let detail = server
+        .get(
+            &format!("/v1/resources/{}", ack.s("resource_id")),
+            Some(&session_header(&session)),
+        )
+        .await;
+    assert_eq!(detail.body["revision"]["author"]["name"], "wk");
+    assert!(
+        detail.body["revision"]["author"]["token_label"].is_null(),
+        "no token was used, so none is claimed: {:?}",
+        detail.body["revision"]["author"]
+    );
+}

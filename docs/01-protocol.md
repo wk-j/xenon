@@ -157,6 +157,28 @@ computed server-side from the decoded bytes.
 | `GET /healthz` | `ok` |
 | `GET /v1/activity?project=&kind=&cursor=&limit=` | the activity log the caller may see, newest first |
 
+### Authorship
+
+Every revision records the actor the server authenticated for that upload, and every read route
+that returns one carries it:
+
+```json
+"author": { "name": "wk", "token_label": "krypton on this laptop", "token_revoked": false }
+```
+
+`GET /v1/resources/{id}` also returns `last_author`, resolved from the head revision, so listing
+who last touched a resource costs no extra request. `GET /v1/resources/{id}/revisions` carries
+`author` per row.
+
+`token_label` is `null` for a session-authenticated push and for revisions written before this
+existed: null means **not recorded**, never "unknown human". A revoked token still names itself,
+with `token_revoked: true` — it says who pushed that revision at the time.
+
+This is the **verified** half of an upload's identity. The `origin` object beside it (`hostname`,
+`project_dir`, `krypton_version`) and `meta.lane` are whatever the pushing client asserted about
+itself; the two are deliberately never merged, and the browse UI renders the claimed half in a
+muted voice that says so. See `docs/04-upload-authorship.md`.
+
 ### `GET /v1/activity`
 
 `{ "events": [ { id, seq, kind, actor, project, resource_id, url, subject, detail, created_at } ],

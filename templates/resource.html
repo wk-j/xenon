@@ -11,6 +11,21 @@
   {{ slug }} · revision {{ seq }} of {{ revisions }}{% if pinned %} · pinned{% endif %}
 </div>
 
+{%- if let Some(byline) = byline %}
+{#- Verified first, claimed last. The account and the token label are what the
+    server authenticated; the lane and host are what the pushing client said
+    about itself, so they sit in their own muted span and say so on hover. -#}
+<p class="byline">
+  by <span class="byline__who">{{ byline.who }}</span>
+  {%- if let Some(token) = byline.token %}
+  · <span class="byline__token">{{ token }}{% if byline.token_revoked %} (revoked){% endif %}</span>
+  {%- endif %}
+  {%- if let Some(claimed) = byline.claimed %}
+  · <span class="byline__claimed" title="reported by the client that pushed this, not verified">{{ claimed }}</span>
+  {%- endif %}
+</p>
+{%- endif %}
+
 {%- if files.len() > 1 %}
 <ul class="files">
   {%- for f in files %}

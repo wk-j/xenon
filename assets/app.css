@@ -89,6 +89,14 @@ transition:background 160ms cubic-bezier(.22,1,.36,1),color 160ms cubic-bezier(.
 .kinds--events a:hover{color:var(--accent);background:var(--code-bg)}
 .kinds--events a.on{color:var(--bg);background:var(--accent);border-color:var(--accent)}
 
+/* Who uploaded this. Two voices in one line: what the server authenticated
+   reads in the text colour, what the client merely claimed stays muted, so the
+   difference is visible without reading the tooltip. */
+.byline{margin:6px 0 0;font:11px/1.6 var(--mono);letter-spacing:.04em;color:var(--muted)}
+.byline__who{color:var(--fg)}
+.byline__token{color:var(--text)}
+.byline__claimed{color:var(--muted)}
+
 /* Activity feed. A row is a sentence, not a card: actor, verb, object, when.
    Cards here would be eleven boxes of chrome around one line of text each, and
    the whole point of the page is that it can be scanned. */
