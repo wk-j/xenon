@@ -1,6 +1,10 @@
 {% extends "base.html" %}
 
+{#- The kind class sits on a wrapper rather than only on the chip, so both things
+    that belong to this resource — its chip and its open file tab — carry the one
+    hue the reader has already learned from the project page. -#}
 {% block content %}
+<div class="res k--{{ kind }}">
 <h2>{{ title }}</h2>
 <div class="meta">
   <span class="pill k">{{ kind }}</span>
@@ -34,4 +38,5 @@
   {%- endif %}
 </nav>
 {%- endif %}
+</div>
 {% endblock %}

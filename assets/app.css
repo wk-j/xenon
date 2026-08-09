@@ -1,12 +1,34 @@
 :root{--bg:#17191d;--fg:#eaecef;--text:#b7bdc6;--muted:#707a8a;--border:#2f353d;
 --accent:#fcd535;--card:#21242a;--code-bg:#1d1f24;--code-fg:#f0b90b;--add:#0ecb81;--del:#f6465d;
---warn:#f0b90b;
+--warn:#f0b90b;--info:oklch(.79 .12 250);
+/* Kind hues. Xenon stores exactly five kinds and they were all the same grey
+   pill, so the one genuinely categorical axis in the product was invisible.
+   One hue each, spaced around the wheel and kept clear of the three colours
+   that already mean something here: yellow = action/selection, green = success,
+   red = danger. They appear on the kind chip and its filter only — never on a
+   card, a heading, or a border at size — so the page gains a legend, not a
+   coat of paint. OKLCH because equal lightness reads equal: every one of these
+   lands at L .78-.82 and clears 7:1 on the canvas. */
+--k-artifact:oklch(.82 .11 195);
+--k-review:oklch(.78 .13 300);
+--k-analysis:oklch(.78 .14 340);
+--k-doc:oklch(.80 .11 250);
+--k-attention:oklch(.80 .13 55);
+--k:var(--accent);
 --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Helvetica,Arial,sans-serif;
 --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace}
+.k--artifact{--k:var(--k-artifact)}
+.k--review{--k:var(--k-review)}
+.k--analysis{--k:var(--k-analysis)}
+.k--doc{--k:var(--k-doc)}
+.k--attention{--k:var(--k-attention)}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 var(--sans)}
 a{color:var(--accent);text-decoration:none}
 a:hover{text-decoration:underline}
+/* Keyboard focus was invisible on every control. Yellow is the interaction
+   colour everywhere else on this surface, so it is the ring too. */
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
 .wrap{max-width:1100px;margin:0 auto;padding:24px 20px 64px}
 header.top{display:flex;align-items:baseline;gap:16px;border-bottom:1px solid var(--border);
 padding-bottom:12px;margin-bottom:20px}
@@ -23,22 +45,43 @@ header.top nav button:hover{color:var(--accent);text-decoration:underline}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
 .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:13px}
 .card h3{margin:0 0 6px;font:600 13px/1.3 var(--sans)}
+/* A card title is the content, not an action, so it reads in the text colour
+   and lets the kind chip beside it be the coloured thing. Every title in yellow
+   was spending the accent on the least surprising element on the page. */
+.card h3 a{color:var(--fg)}
+.card h3 a:hover{color:var(--accent)}
 .meta{font:11px/1.6 var(--mono);color:var(--muted);letter-spacing:.04em;
 font-variant-numeric:tabular-nums}
 .pill{display:inline-block;background:var(--code-bg);border-radius:5px;padding:2px 7px;
 font:10px/1.6 var(--mono);letter-spacing:.04em;color:var(--muted)}
-.pill.k{color:var(--accent)}
+/* The kind chip is the legend for its hue: same colour here, on the filter row,
+   and on the resource page, so the mapping is learned once. */
+.pill.k{color:var(--k);background:color-mix(in oklab,var(--k) 13%,var(--code-bg));
+box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--k) 28%,transparent)}
+/* Public is a fact about who can read this, so it gets the success tone;
+   private is the quiet default and stays neutral. The word carries it either
+   way — the colour is the second signal, never the only one. */
+.state{font:10px/1.6 var(--mono);letter-spacing:.04em}
+.state--public{color:var(--add)}
+.state--private{color:var(--muted)}
 .empty{text-align:center;color:var(--muted);font:12px/2 var(--mono);padding:36px 0}
 .footer{border-top:1px solid var(--border);margin-top:28px;padding-top:10px;
 font:11px/1.6 var(--mono);color:var(--muted)}
 .kinds{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
-.kinds a{background:var(--code-bg);border:1px solid var(--border);border-radius:5px;
-padding:3px 9px;font:10px/1.6 var(--mono);letter-spacing:.04em;color:var(--muted)}
-.kinds a.on{color:var(--bg);background:var(--accent);border-color:var(--accent)}
+.kinds a{background:var(--code-bg);border:1px solid color-mix(in oklab,var(--k) 26%,var(--border));
+border-radius:5px;padding:3px 9px;font:10px/1.6 var(--mono);letter-spacing:.04em;color:var(--k);
+transition:background 160ms cubic-bezier(.22,1,.36,1),color 160ms cubic-bezier(.22,1,.36,1)}
+.kinds a:hover{background:color-mix(in oklab,var(--k) 14%,var(--code-bg));text-decoration:none}
+/* The selected filter is the one place a kind hue fills a shape: solid on the
+   canvas colour, so "what am I looking at" is answered from across the room. */
+.kinds a.on{color:var(--bg);background:var(--k);border-color:var(--k)}
+@media (prefers-reduced-motion:reduce){.kinds a{transition:none}}
 .files{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 16px;padding:0;list-style:none}
 .files a{display:block;background:var(--code-bg);border:1px solid var(--border);border-radius:5px;
 padding:3px 9px;font:11px/1.6 var(--mono);color:var(--muted)}
-.files a.on{color:var(--accent);border-color:var(--accent)}
+/* The open file belongs to a resource of a known kind, so the tab that is open
+   is marked in that resource's own hue. */
+.files a.on{color:var(--k);border-color:color-mix(in oklab,var(--k) 55%,var(--border))}
 article.doc{max-width:820px;font-size:15px;line-height:1.65;color:var(--text)}
 article.doc h1{font-size:1.75em;color:var(--accent)}
 article.doc h2{font-size:1.35em;border-bottom:1px solid var(--border);padding-bottom:.2em}
@@ -112,16 +155,28 @@ ol.rv-steps>li:last-child{margin-bottom:0}
 .rv-steps__title{font:12px var(--mono);color:var(--muted);text-transform:uppercase;
 letter-spacing:.04em;margin:1.4em 0 .4em}
 
-.rv-finding{margin:1em 0;padding:12px 14px;border:1px solid var(--border);
-border-radius:8px;background:var(--card)}
+/* Severity tints the whole perimeter and the fill, never one edge — a card is
+   scannable at a glance without reading the chip, and the chip is still there
+   for anyone who cannot see the difference. */
+.rv-finding{margin:1em 0;padding:12px 14px;
+border:1px solid color-mix(in oklab,var(--sev) 34%,var(--border));
+border-radius:8px;background:color-mix(in oklab,var(--sev) 7%,var(--card));
+--sev:var(--muted);--sev-ink:var(--sev)}
 .rv-finding__head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
-.rv-finding__sev{font:700 11px var(--mono);letter-spacing:.06em}
-.rv-finding--blocking .rv-finding__sev,.rv-finding--blocking .rv-finding__title{color:var(--del)}
-.rv-finding--warn .rv-finding__sev,.rv-finding--warn .rv-finding__title{color:var(--warn)}
-.rv-finding--sugg .rv-finding__sev{color:var(--muted)}
-.rv-finding--sugg .rv-finding__title{color:var(--fg)}
+.rv-finding__sev{font:700 11px var(--mono);letter-spacing:.06em;color:var(--sev-ink)}
+.rv-finding__title{color:var(--sev-ink)}
+/* `--del` is the alert red: right for the border, too dark for 11px type on a
+   surface tinted with itself (measured 4.07:1). The ink is the same red lifted
+   until it clears AA, so the card keeps one colour and the text stays legible. */
+.rv-finding--blocking{--sev:var(--del);--sev-ink:oklch(.79 .15 22)}
+.rv-finding--warn{--sev:var(--warn)}
+/* A suggestion is information, not a problem: blue reads as "worth knowing"
+   where the old grey read as "ignore me". */
+.rv-finding--sugg{--sev:var(--info)}
 .rv-finding__title{font-weight:600}
-.rv-finding__at{margin-left:auto;font:11px var(--mono);color:var(--muted);word-break:break-all}
+/* The path is the second thing read on a finding, not decoration; muted sat at
+   3.3:1 on the tinted fill. */
+.rv-finding__at{margin-left:auto;font:11px var(--mono);color:var(--text);word-break:break-all}
 
 ol.rv-options{list-style:decimal;margin:.6em 0 1em;padding-left:1.7em}
 ol.rv-options>li{margin:.3em 0}
@@ -162,10 +217,16 @@ pre.rv-diff span{display:block}
    by house rule: one surface, no card inside a card, no left accent rails. */
 .jdg{max-width:820px;margin:1.2em 0}
 .jdg__tier{display:inline-block;margin:0 0 1.2em;padding:2px 8px;border-radius:5px;
-border:1px solid var(--border);background:var(--code-bg);
-font:700 11px/1.6 var(--mono);letter-spacing:.06em;color:var(--muted)}
-.jdg__tier--costly{color:var(--warn);border-color:var(--warn)}
-.jdg__tier--irreversible{color:var(--del);border-color:var(--del)}
+border:1px solid color-mix(in oklab,var(--tier) 45%,var(--border));
+background:color-mix(in oklab,var(--tier) 10%,var(--code-bg));
+font:700 11px/1.6 var(--mono);letter-spacing:.06em;color:var(--tier-ink);
+--tier:var(--muted);--tier-ink:var(--tier)}
+/* Three tiers, three tones, in the order a reader triages them: safe to undo,
+   expensive to undo, cannot be undone. Irreversible borrows the finding card's
+   lifted red for the same reason: 11px of `--del` on its own tint fails AA. */
+.jdg__tier--reversible{--tier:var(--add)}
+.jdg__tier--costly{--tier:var(--warn)}
+.jdg__tier--irreversible{--tier:var(--del);--tier-ink:oklch(.79 .15 22)}
 .jdg__field{margin:0 0 1.4em}
 .jdg__field h3{margin:0 0 .35em;font:12px var(--mono);color:var(--muted);
 text-transform:uppercase;letter-spacing:.04em}

@@ -255,6 +255,43 @@ An earlier revision recommended Svelte on the grounds of bundle size and less ce
 weak reasoning: for an internal tool the bundle difference is unobservable, and the criterion that
 actually matters here is who maintains the code. Recorded so the argument is not re-run.
 
+### Stage 4 — Kind hues (2026-08-09)
+
+The browse UI inherited Krypton's `DESIGN.binance.md`: one canvas, one yellow accent, green and
+red as semantics, everything else grey. That rule is right for the surfaces it was written for
+(dashboards and one-off artifacts, where nothing is categorical), and wrong here. Xenon's whole
+model is **five kinds of resource**, and all five rendered as the same grey chip, so the one axis
+the product is organised around was the one thing the page did not show.
+
+Each kind now owns a hue. Declared once in `:root`, selected by a `k--<kind>` class that sets a
+single `--k` variable, so a component reads `var(--k)` and never names a kind:
+
+| Kind | Hue | Why that one |
+|---|---|---|
+| `artifact` | `oklch(.82 .11 195)` cyan | |
+| `doc` | `oklch(.80 .11 250)` blue | reference material, coolest end |
+| `review` | `oklch(.78 .13 300)` violet | |
+| `analysis` | `oklch(.78 .14 340)` magenta | |
+| `attention` | `oklch(.80 .13 55)` amber | the only kind that is a request to a human, so it sits warm |
+
+Rules that keep this a legend rather than decoration:
+
+- **Kind hue appears on the kind chip, the kind filter, and the open file tab. Nothing else.**
+  Not on cards, headings, borders at size, or backgrounds.
+- **Yellow, green, and red keep their old jobs**: yellow is action / current selection / focus ring,
+  green is success and public, red is danger. No kind is allowed to claim them, which is why the
+  hues above sit in the 195-340 band and the one warm exception is 55, clear of the yellow at 90.
+- **Colour is never the only signal.** Every chip prints its kind; every finding prints its
+  severity; every tier prints its word.
+- **`--del` is not a text colour on a `--del`-tinted surface** — measured 4.07:1 at 11px. Severity
+  and tier text use a lifted `oklch(.79 .15 22)` ink while the border keeps `--del`. Every
+  colour pair on the browse UI was measured in-browser: the floor is 6.2:1.
+
+**This is a deliberate divergence from `DESIGN.binance.md`,** which forbids a second accent hue.
+Krypton's own loopback surfaces are unchanged and still follow that file; Xenon does not, because a
+resource browser has a categorical axis those surfaces do not have. If the two are ever expected to
+match chip for chip again, this is the section to revisit.
+
 ### Configuration
 
 None. No new environment variables; assets are compile-time.

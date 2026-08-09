@@ -3,11 +3,14 @@
 {% block content %}
 <h2 class="meta">{{ project }}</h2>
 
+{#- Each filter wears the hue of the kind it selects, so this row doubles as the
+    legend for the chips on the cards below. "all" keeps the accent: it is a
+    reset, not a kind. -#}
 <div class="kinds">
   <a href="/p/{{ project }}" class="{% if kind_filter.is_none() %}on{% endif %}">all</a>
   {%- for k in kinds %}
   <a href="/p/{{ project }}?kind={{ k }}"
-     class="{% if kind_filter.as_deref() == Some(k) %}on{% endif %}">{{ k }}</a>
+     class="k--{{ k }}{% if kind_filter.as_deref() == Some(k) %} on{% endif %}">{{ k }}</a>
   {%- endfor %}
 </div>
 
@@ -25,7 +28,7 @@
   <div class="card">
     <h3><a href="/r/{{ project }}/{{ r.kind }}/{{ r.slug }}">{{ r.title }}</a></h3>
     <div class="meta">
-      <span class="pill k">{{ r.kind }}</span>
+      <span class="pill k k--{{ r.kind }}">{{ r.kind }}</span>
       {{ r.slug }} · {{ r.revisions }} rev · updated {{ r.updated_at }}
     </div>
   </div>
