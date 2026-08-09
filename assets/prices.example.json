@@ -1,0 +1,36 @@
+[
+  {
+    "match": "claude-opus-*",
+    "input": 0,
+    "output": 0,
+    "cached_read": 0,
+    "cached_write": 0,
+    "currency": "USD",
+    "source": "https://www.anthropic.com/pricing — replace the zeros with the figures here"
+  },
+  {
+    "match": "claude-sonnet-*",
+    "input": 0,
+    "output": 0,
+    "cached_read": 0,
+    "cached_write": 0,
+    "currency": "USD",
+    "source": "https://www.anthropic.com/pricing — replace the zeros with the figures here"
+  },
+  {
+    "match": "gpt-5*",
+    "input": 0,
+    "output": 0,
+    "cached_read": 0,
+    "currency": "USD",
+    "source": "https://openai.com/api/pricing — replace the zeros with the figures here"
+  },
+  {
+    "match": "gemini-*",
+    "input": 0,
+    "output": 0,
+    "cached_read": 0,
+    "currency": "USD",
+    "source": "https://ai.google.dev/pricing — replace the zeros with the figures here"
+  }
+]

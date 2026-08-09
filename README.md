@@ -112,6 +112,26 @@ exposes a half-uploaded resource.
 - A caller who may not read a project is told it does not exist, so project
   names are not enumerable.
 
+## LLM usage
+
+Besides resources, Xenon stores **per-turn LLM usage** streamed live by Krypton:
+token counts, model, lane, and the cost the provider reported. Rows are numeric
+only — no prompt or response text ever reaches this server.
+
+Browse them at `/p/<project>/usage`, reachable from the `llm usage` tab on any
+project page. Pick a window (today · 7 days · 30 days · all) and the page shows
+the range total, the same figures grouped by model, lane, backend, and day, and
+then the newest 60 turns themselves — the rows the sums are made of, with the
+per-turn facts that cannot be summed: why each turn stopped, what started it,
+how full its context was, and whether the model id was one the agent confirmed.
+
+Cost estimates need a rate table. Xenon ships **no prices of its own**: copy
+`assets/prices.example.json` to `$XENON_DATA_DIR/prices.json` and replace its
+zeros with the figures from each provider's price page. Until you do, the page
+shows token counts and names each model as unpriced — a blank column is honest,
+an invented total is not. Prices are applied on read, so fixing a rate fixes
+every past report.
+
 ## API
 
 See [`docs/01-protocol.md`](docs/01-protocol.md) for the wire contract. The full
@@ -121,7 +141,7 @@ design and its rationale live in the Krypton repo at
 ## Development
 
 ```sh
-make test    # 31 unit + 22 end-to-end tests
+make test    # 88 unit + 46 end-to-end tests
 make lint    # clippy, warnings denied
 make fmt     # rustfmt in place
 make check   # fmt --check + lint + test

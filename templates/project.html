@@ -3,6 +3,15 @@
 {% block content %}
 <h2 class="meta">{{ project }}</h2>
 
+{#- The project's two pages. Usage (spec 214) is a second body of data under the
+    same project, not a sixth resource kind, so it is a page switch ABOVE the
+    kind filter rather than another chip inside it — a chip in that row would
+    read as "show me usage resources", which is not a thing that exists. -#}
+<div class="tabs">
+  <a href="/p/{{ project }}" class="on" aria-current="page">resources</a>
+  <a href="/p/{{ project }}/usage">llm usage</a>
+</div>
+
 {#- Each filter wears the hue of the kind it selects, so this row doubles as the
     legend for the chips on the cards below. "all" keeps the accent: it is a
     reset, not a kind. -#}

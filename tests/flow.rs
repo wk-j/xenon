@@ -2160,3 +2160,307 @@ async fn a_session_push_records_the_account_and_no_token() {
         detail.body["revision"]["author"]
     );
 }
+
+// ─── Per-turn LLM usage (Krypton spec 214) ───────────────────────────────────
+
+fn usage_turn(id: &str, at: i64, model: &str, lane: &str, input: i64, output: i64) -> Value {
+    json!({
+        "v": 1, "id": id, "at": at, "durationMs": 4200,
+        "hostname": "mbp", "harnessId": "hm-1", "lane": lane, "backend": "claude",
+        "model": model, "modelConfirmed": true, "sessionId": "s1", "turn": 1,
+        "stopReason": "end_turn", "origin": "user",
+        "tokens": { "input": input, "output": output, "cachedRead": 1000 },
+        "context": { "used": 132000, "size": 1000000 }
+    })
+}
+
+/// The end-to-end shape Krypton actually drives: mint a write token, post turns
+/// as they end, read them back aggregated.
+#[tokio::test]
+async fn usage_turns_ingest_and_aggregate() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(&session, json!(["resource:write", "resource:read"]))
+        .await;
+    let at = 1_786_233_600_000i64;
+
+    let res = server
+        .post(
+            "/v1/projects/wk-j.krypton/usage/turns",
+            Some(&token),
+            json!({ "turns": [
+                usage_turn("usg-1", at, "claude-opus-5", "Claude-1", 100, 10),
+                usage_turn("usg-2", at, "claude-opus-5", "Claude-1", 200, 20),
+                usage_turn("usg-3", at, "gpt-5", "Codex-1", 300, 30),
+            ]}),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::ACCEPTED, "{:?}", res.body);
+    assert_eq!(res.body["accepted"], 3);
+    assert_eq!(res.body["duplicates"], 0);
+
+    let res = server
+        .get("/v1/projects/wk-j.krypton/usage?group=model", Some(&token))
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{:?}", res.body);
+    assert_eq!(res.body["totals"]["turns"], 3);
+    assert_eq!(res.body["totals"]["inputTokens"], 600);
+    assert_eq!(res.body["totals"]["outputTokens"], 60);
+    assert_eq!(res.body["buckets"][0]["key"], "claude-opus-5");
+    assert_eq!(res.body["buckets"][0]["turns"], 2);
+}
+
+/// The property the whole ingest design rests on: a client that cannot tell
+/// whether its POST landed re-sends the same ids, and must not be double-billed.
+#[tokio::test]
+async fn re_posting_the_same_turns_is_a_duplicate_not_a_second_charge() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(&session, json!(["resource:write", "resource:read"]))
+        .await;
+    let at = 1_786_233_600_000i64;
+    let batch = json!({ "turns": [usage_turn("usg-1", at, "claude-opus-5", "Claude-1", 100, 10)] });
+
+    server
+        .post(
+            "/v1/projects/p.one/usage/turns",
+            Some(&token),
+            batch.clone(),
+        )
+        .await;
+    let again = server
+        .post("/v1/projects/p.one/usage/turns", Some(&token), batch)
+        .await;
+    assert_eq!(again.body["accepted"], 0);
+    assert_eq!(again.body["duplicates"], 1);
+
+    let res = server.get("/v1/projects/p.one/usage", Some(&token)).await;
+    assert_eq!(res.body["totals"]["turns"], 1);
+    assert_eq!(res.body["totals"]["inputTokens"], 100);
+}
+
+/// One unusable row must not take the batch behind it down: a fleet's ledger
+/// cannot be held hostage by a single bad row.
+#[tokio::test]
+async fn a_rejected_row_is_named_and_the_rest_of_the_batch_still_lands() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(&session, json!(["resource:write", "resource:read"]))
+        .await;
+    let at = 1_786_233_600_000i64;
+    let mut future_row = usage_turn("usg-future", at, "claude-opus-5", "Claude-1", 1, 1);
+    future_row["v"] = json!(99);
+
+    let res = server
+        .post(
+            "/v1/projects/p.one/usage/turns",
+            Some(&token),
+            json!({ "turns": [future_row, usage_turn("usg-ok", at, "claude-opus-5", "Claude-1", 5, 5)] }),
+        )
+        .await;
+    assert_eq!(res.body["accepted"], 1);
+    assert_eq!(res.body["rejected"][0]["id"], "usg-future");
+
+    let res = server.get("/v1/projects/p.one/usage", Some(&token)).await;
+    assert_eq!(res.body["totals"]["turns"], 1);
+}
+
+/// Usage is project data, so it must obey the same read boundary resources do.
+#[tokio::test]
+async fn usage_is_not_readable_without_access_to_the_project() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server.mint_token(&session, json!(["resource:write"])).await;
+    server
+        .post(
+            "/v1/projects/p.one/usage/turns",
+            Some(&token),
+            json!({ "turns": [usage_turn("usg-1", 1_786_233_600_000, "m", "L", 1, 1)] }),
+        )
+        .await;
+
+    let anon = server.get("/v1/projects/p.one/usage", None).await;
+    assert_eq!(anon.status, StatusCode::NOT_FOUND, "{:?}", anon.body);
+}
+
+/// A write token must not be able to read the ledger back unless it was also
+/// granted read — the scopes are separate for a reason.
+#[tokio::test]
+async fn a_write_only_token_cannot_read_the_usage_it_wrote() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server.mint_token(&session, json!(["resource:write"])).await;
+    server
+        .post(
+            "/v1/projects/p.one/usage/turns",
+            Some(&token),
+            json!({ "turns": [usage_turn("usg-1", 1_786_233_600_000, "m", "L", 1, 1)] }),
+        )
+        .await;
+
+    let res = server.get("/v1/projects/p.one/usage", Some(&token)).await;
+    assert_eq!(res.status, StatusCode::FORBIDDEN, "{:?}", res.body);
+}
+
+/// The browse page renders the numbers, and says so when a model has no rate
+/// rather than printing a zero that reads as "free".
+#[tokio::test]
+async fn the_usage_page_renders_totals_and_names_unpriced_models() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server.mint_token(&session, json!(["resource:write"])).await;
+    server
+        .post(
+            "/v1/projects/p.one/usage/turns",
+            Some(&token),
+            json!({ "turns": [usage_turn(
+                "usg-1", 1_786_233_600_000, "some-unpriced-model", "Claude-1", 4242, 99
+            )]}),
+        )
+        .await;
+
+    let (status, html) = server
+        .get_html("/p/p.one/usage?days=0", Some(&session))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("llm usage"), "{html}");
+    assert!(
+        html.contains("4,242"),
+        "input tokens must be on the page, grouped: {html}"
+    );
+    assert!(
+        html.contains("no rate for some-unpriced-model"),
+        "an unpriced model must be named, not silently blank: {html}"
+    );
+    // Every axis a spend question is asked along, including the backend one the
+    // API served from the start but the page did not offer.
+    for group in ["by model", "by lane", "by backend", "by day"] {
+        assert!(html.contains(group), "missing grouping {group}: {html}");
+    }
+}
+
+/// A ledger has to be able to show a row. Aggregates alone can say a week cost
+/// $40 and offer nothing to point at when that looks wrong, and the per-turn
+/// facts that cannot be summed exist nowhere else.
+#[tokio::test]
+async fn the_usage_page_lists_the_turns_its_totals_are_made_of() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server.mint_token(&session, json!(["resource:write"])).await;
+
+    let mut unconfirmed = usage_turn(
+        "usg-2",
+        1_786_233_600_000 + 1000,
+        "claude-opus-5",
+        "Codex-1",
+        7,
+        3,
+    );
+    unconfirmed["modelConfirmed"] = json!(false);
+    unconfirmed["stopReason"] = json!("max_tokens");
+    // An adapter that reports no counters at all.
+    unconfirmed["tokens"] = Value::Null;
+
+    server
+        .post(
+            "/v1/projects/p.one/usage/turns",
+            Some(&token),
+            json!({ "turns": [
+                usage_turn("usg-1", 1_786_233_600_000, "claude-opus-5", "Claude-1", 4242, 99),
+                unconfirmed,
+            ]}),
+        )
+        .await;
+
+    let (status, html) = server
+        .get_html("/p/p.one/usage?days=0", Some(&session))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    // The turn's absolute instant, not "3 min ago": this column is what gets
+    // lined up against a provider's invoice.
+    assert!(
+        html.contains("2026-08-09 00:00:00"),
+        "a turn must show when it happened: {html}"
+    );
+    assert!(html.contains("Codex-1"), "each turn names its lane: {html}");
+    assert!(
+        html.contains("end_turn") && html.contains("max_tokens"),
+        "stop reason lives only in the ledger: {html}"
+    );
+    assert!(
+        html.contains("13%"),
+        "context level is a level, shown per turn: {html}"
+    );
+    assert!(
+        html.contains("1 unreported"),
+        "a turn nobody measured is counted and named, never folded into a zero: {html}"
+    );
+    // The Codex-1 lane here is a single unmeasured turn. Its token sums are
+    // zero by construction, and printing them would say the lane was free.
+    assert!(
+        html.contains("none reported"),
+        "a bucket with no counters at all must go blank, not print zeros: {html}"
+    );
+    assert!(
+        html.contains("the agent never confirmed it"),
+        "an unconfirmed model id must be marked as intent, not fact: {html}"
+    );
+}
+
+/// The page existed but nothing linked to it, so it was reachable only by
+/// someone who already knew the URL.
+#[tokio::test]
+async fn the_project_page_links_to_its_usage_ledger() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server.mint_token(&session, json!(["resource:write"])).await;
+    server
+        .post(
+            "/v1/projects/p.one/usage/turns",
+            Some(&token),
+            json!({ "turns": [usage_turn(
+                "usg-1", 1_786_233_600_000, "claude-opus-5", "Claude-1", 1, 1
+            )]}),
+        )
+        .await;
+
+    let (status, html) = server.get_html("/p/p.one", Some(&session)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains("/p/p.one/usage"),
+        "the project page must offer its usage ledger: {html}"
+    );
+}
+
+/// An empty range is not an error, and the page has to say what would put rows
+/// in it — an empty table with no explanation reads as a broken feature.
+#[tokio::test]
+async fn an_empty_usage_range_explains_itself() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server.mint_token(&session, json!(["resource:write"])).await;
+    // A turn from 2020: the project exists and has history, but nothing lands
+    // inside a one-day window.
+    server
+        .post(
+            "/v1/projects/p.one/usage/turns",
+            Some(&token),
+            json!({ "turns": [usage_turn(
+                "usg-old", 1_600_000_000_000, "claude-opus-5", "Claude-1", 1, 1
+            )]}),
+        )
+        .await;
+
+    let (status, html) = server
+        .get_html("/p/p.one/usage?days=1", Some(&session))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("no turns in this range"), "{html}");
+    assert!(
+        html.contains("usage_log"),
+        "the empty state must name what produces rows: {html}"
+    );
+}

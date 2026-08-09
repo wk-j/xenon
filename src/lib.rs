@@ -13,8 +13,10 @@ pub mod db;
 pub mod error;
 pub mod event;
 pub mod meta;
+pub mod price;
 pub mod render;
 pub mod state;
+pub mod usage;
 pub mod util;
 pub mod web;
 
@@ -29,6 +31,7 @@ pub fn build_app(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .merge(api::routes(max_blob_bytes))
+        .merge(usage::routes())
         .merge(account::routes())
         .merge(assets::routes())
         .merge(web::routes())

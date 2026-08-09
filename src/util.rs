@@ -49,6 +49,17 @@ pub fn format_ymd(ts: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+/// `YYYY-MM-DD HH:MM:SS` in UTC.
+///
+/// The usage ledger (spec 214) is the one surface read against an outside
+/// document — a provider's invoice, or a lane's own transcript. "3 min ago"
+/// cannot be lined up with either, so a turn prints its absolute instant.
+pub fn format_ymd_hms(ts: i64) -> String {
+    let secs = ts.rem_euclid(86_400);
+    let (h, m, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    format!("{} {h:02}:{m:02}:{s:02}", format_ymd(ts))
+}
+
 /// Days since the epoch → (year, month, day). Howard Hinnant's `civil_from_days`,
 /// the standard shift-the-era-to-March algorithm; valid for any i64 day count.
 pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
@@ -176,6 +187,24 @@ mod tests {
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
         assert_eq!(random_base32(12).unwrap().len(), 12);
+    }
+
+    /// The ledger's timestamps are read against outside documents, so both the
+    /// date rollover and the clock have to be right — including the instant a
+    /// day ends, where a truncating division would print the wrong day.
+    #[test]
+    fn ymd_hms_formats_utc_including_the_last_second_of_a_day() {
+        assert_eq!(format_ymd_hms(1_786_233_600), "2026-08-09 00:00:00");
+        assert_eq!(
+            format_ymd_hms(1_786_233_600 + 86_399),
+            "2026-08-09 23:59:59"
+        );
+        assert_eq!(
+            format_ymd_hms(1_786_233_600 + 86_400),
+            "2026-08-10 00:00:00"
+        );
+        // Pre-epoch: `rem_euclid` keeps the clock positive where `%` would not.
+        assert_eq!(format_ymd_hms(-1), "1969-12-31 23:59:59");
     }
 
     #[test]

@@ -184,6 +184,40 @@ font-variant-numeric:tabular-nums}
 table.data th{text-align:left;color:var(--muted);font-weight:400;letter-spacing:.04em;
 border-bottom:1px solid var(--border);padding:6px 8px}
 table.data td{border-bottom:1px solid var(--border);padding:6px 8px;color:var(--text)}
+
+/* Page switch (spec 214). A project's resources and its usage ledger are two
+   bodies of data under one project, so they are peers — not a filter of one
+   another, which is why this sits above the kind chips and does not borrow
+   their pill shape. */
+.tabs{display:flex;gap:18px;margin:14px 0 16px;padding-bottom:9px;
+border-bottom:1px solid var(--border);font:11px/1 var(--mono);letter-spacing:.04em}
+.tabs a{color:var(--muted)}
+.tabs a:hover{color:var(--accent);text-decoration:none}
+.tabs a.on{color:var(--fg)}
+
+/* A numeric table is read down its columns, so every figure is right-aligned
+   and only the cells that NAME a thing stay left. `tabular-nums` on table.data
+   is what makes the digits line up once they are. */
+table.data--num th,table.data--num td{text-align:right}
+table.data--num th.txt,table.data--num td.txt,
+table.data--num th:first-child{text-align:left}
+table.data--num td.txt{color:var(--fg)}
+
+/* Eight columns here and twelve in the ledger, so on a narrow screen each
+   table scrolls inside its own box rather than letting the whole document
+   scroll — that would carry the nav and the range chips off with it. Nothing
+   wraps: a model id broken across three lines costs more legibility than the
+   scrollbar does. */
+.scroll{overflow-x:auto}
+table.data--num{white-space:nowrap}
+table.data--ledger td.txt{color:var(--text)}
+table.data--ledger td.txt:first-child{color:var(--fg)}
+
+/* A statement about data that is missing — one flat surface, full border, no
+   left accent rail. */
+.notice{margin:16px 0 0;padding:9px 12px;border:1px solid var(--border);border-radius:6px;
+background:var(--code-bg);font:11px/1.7 var(--mono);color:var(--muted)}
+.empty code,.notice code{color:var(--code-fg)}
 .secret{background:var(--code-bg);border:1px solid var(--accent);border-radius:8px;padding:12px;
 margin:12px 0;font:12px var(--mono);color:var(--accent);word-break:break-all}
 .scopes{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px;font:11px var(--mono);

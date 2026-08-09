@@ -79,6 +79,16 @@ impl Config {
         self.data_dir.join("blobs")
     }
 
+    /// The model rate table (spec 214). Lives in the data directory, not in the
+    /// binary, so an operator can correct a price the day it changes without
+    /// waiting for a release — which is the entire argument for pricing here
+    /// rather than in the client.
+    pub fn prices_path(&self) -> PathBuf {
+        std::env::var("XENON_PRICES_FILE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| self.data_dir.join("prices.json"))
+    }
+
     /// Test-only constructor. Public because the integration suite is a
     /// separate crate and cannot reach a `#[cfg(test)]` item.
     #[doc(hidden)]

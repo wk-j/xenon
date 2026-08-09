@@ -209,9 +209,13 @@ agent-authored and untrusted.
 ## Browse
 
 `/` projects · `/p/<project>` resources, filterable by kind ·
-`/r/<project>/<kind>/<slug>` the resource · `/r/<project>/<kind>/<slug>/@<seq>`
-a pinned revision · `/activity` the feed · `/register` · `/login` · `POST /logout` ·
-`/settings/tokens`.
+`/p/<project>/usage` the LLM usage ledger · `/r/<project>/<kind>/<slug>` the
+resource · `/r/<project>/<kind>/<slug>/@<seq>` a pinned revision · `/activity`
+the feed · `/register` · `/login` · `POST /logout` · `/settings/tokens`.
+
+A project has two pages — its resources and its usage — and each links to the
+other. They are peers, not a filter of one another: usage is a second body of
+data under the same project, not a sixth resource kind.
 
 `/settings/tokens` is the one private page: without a session it answers `303`
 to `/login` rather than rendering a shell its script would then have to empty.
@@ -226,3 +230,111 @@ and `sign out`; anonymous, it shows `sign in` only.
 
 Markdown renders server-side with raw HTML disabled. HTML artifacts render in a
 `sandbox`ed iframe.
+
+## LLM usage turns
+
+A second ingest surface, deliberately outside the resource envelope. Krypton
+posts one row per completed prompt turn, as it happens. A row is numeric —
+token counts, a model id, a lane label, a stop reason — and carries no prompt or
+response text; that is what makes streaming it unattended acceptable. See the
+Krypton repo's `docs/214-llm-usage-statistics.md` and its ADR-0019.
+
+`POST /v1/projects/{project}/usage/turns` — `resource:write`, project created on
+first post like any resource push.
+
+```jsonc
+// request                            // 202 response
+{ "turns": [ {                        { "accepted": 2,
+  "v": 1,                               "duplicates": 1,
+  "id": "usg-1786233600000-0f765408",   "rejected": [ { "id": "…", "reason": "…" } ] }
+  "at": 1786233600000,
+  "durationMs": 41230,
+  "hostname": "mbp", "harnessId": "hm-1",
+  "lane": "Claude-3", "backend": "claude",
+  "model": "claude-opus-5", "modelConfirmed": true,
+  "sessionId": "…", "turn": 7,
+  "stopReason": "end_turn", "origin": "user",
+  "tokens": { "input": 12043, "output": 812,
+              "cachedRead": 98211, "cachedWrite": 0 },
+  "context": { "used": 132000, "size": 1000000 },
+  "cost": { "amount": 0.42, "currency": "USD" }
+} ] }
+```
+
+`id` is the **client's** key and the primary key is `(project_id, id)`, so a row
+re-sent after a timeout the client could not interpret is counted as a
+`duplicate`, never as a second charge. That is the property the whole design
+rests on: it is what lets the client retry blindly.
+
+`tokens: null` means the adapter reported no counters. It is stored as
+`has_tokens = 0` and counted separately in every total — a zero would be
+indistinguishable from a genuinely free turn and would understate the project.
+
+A row that cannot be stored is named in `rejected[]` and the rest of the batch
+still lands; one bad row must not hold a fleet's ledger hostage. Clients ack
+rejects deliberately, since a row the server will never accept would otherwise
+wedge everything behind it. At most 500 turns per request. `cost` is stored only
+when the *adapter* reported one; estimates are never persisted.
+
+`GET /v1/projects/{project}/usage?from=&to=&group=` — `resource:read`, a session,
+or a public project. `from`/`to` are epoch **milliseconds**, `from` inclusive and
+`to` exclusive. `group` is one of `day` (default), `model`, `lane`, `backend` —
+a fixed set, never interpolated into SQL.
+
+```jsonc
+{ "project": "wk-j.krypton", "group": "model", "from": null, "to": null,
+  "totals": { "turns": 128, "turnsWithoutTokens": 6,
+              "inputTokens": 4210331, "outputTokens": 182044,
+              "cachedReadTokens": 39118220, "cachedWriteTokens": 210443,
+              "reportedCost": 4.12, "reportedCostTurns": 40,
+              "estimatedCost": 71.83, "currency": "USD" },
+  "buckets": [ { "key": "claude-opus-5", … } ],
+  "unpriced": [ "some-local-model" ] }
+```
+
+`reportedCost` and `estimatedCost` are **never summed**. One is what the
+provider told the client; the other is what this server computed. `estimatedCost`
+is absent — not `0` — when no model in the bucket matched a rate, and every such
+model is named in `unpriced`.
+
+### The usage page
+
+`/p/<project>/usage?days=` renders the same aggregation the API serves, over a
+window of `1`, `7`, `30`, or `0` (everything) days. It shows the range total,
+then the same table grouped by `model`, `lane`, `backend`, and `day`, then the
+newest 60 turns themselves.
+
+The ledger is the part the aggregates cannot replace. A total can say a week
+cost $40 and offer nothing to point at when that looks wrong, and the per-turn
+facts that cannot be summed — why a turn stopped, what started it, how full the
+context was, and whether the model id was one the agent confirmed — appear
+nowhere else. It carries no estimated-cost column on purpose: an estimate is a
+rate table applied to a bucket of tokens, and one per row would invite adding it
+to the reported column.
+
+A bucket in which **no** turn carried counters prints `—` in every token cell
+and `none reported` beside its turn count. Its sums are zero by construction,
+and printing them would say the lane was free when the truth is that nobody
+measured it.
+
+### Model prices
+
+Cost is computed on **read**, from `$XENON_DATA_DIR/prices.json`
+(`XENON_PRICES_FILE` overrides), so correcting a rate corrects history. Copy
+`assets/prices.example.json` and replace its zeros with the figures from each
+provider's price page.
+
+```jsonc
+[ { "match": "claude-opus-*",   // case-insensitive, `*` is the only wildcard,
+    "input": 15.0,              // FIRST match wins, so overrides go above families
+    "output": 75.0,
+    "cached_read": 1.5,         // optional; absent ⇒ priced at the input rate,
+    "cached_write": 18.75,      //   which overstates rather than zeroes
+    "currency": "USD",
+    "source": "https://…" } ]   // provenance, never used in arithmetic
+```
+
+Rates are USD per **million** tokens. An entry whose rates are all zero is
+treated as *unfilled*, not as free — the example file ships exactly that shape.
+A missing file is not an error; the page simply shows tokens without estimates.
+The table is read once at boot, so editing it takes effect on restart.

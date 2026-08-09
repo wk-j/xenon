@@ -201,6 +201,370 @@ struct ProjectCard {
     resource_count: i64,
 }
 
+// ─── LLM usage (Krypton spec 214) ───────────────────────────────────────────
+
+#[derive(askama::Template)]
+#[template(path = "usage.html")]
+struct UsageTemplate {
+    title: String,
+    css_url: String,
+    app_js_url: String,
+    crumbs: Vec<Crumb>,
+    nav: Nav,
+    project: String,
+    days: i64,
+    ranges: &'static [RangeChoice],
+    /// The only number the template branches on. Everything else it prints is
+    /// already a string.
+    turns: i64,
+    /// Currency of every money column, named once in the headings so no cell
+    /// has to carry a symbol.
+    currency: String,
+    total: UsageRow,
+    sections: Vec<UsageSection>,
+    /// The per-turn ledger. The aggregates say what a range cost; this says
+    /// which turns it was made of, and is the only place the fields that
+    /// cannot be summed (stop reason, origin, context level) are visible.
+    recent: Vec<TurnLine>,
+    /// True when `recent` is one page of a longer list — the page says so
+    /// rather than implying these are all the turns there were.
+    recent_truncated: bool,
+    unpriced: Vec<String>,
+}
+
+/// A page of the ledger. Long enough to cover a working session, short enough
+/// that the page stays one document rather than an endless scroll.
+const RECENT_TURNS: i64 = 60;
+
+struct RangeChoice {
+    days: i64,
+    label: &'static str,
+}
+
+const USAGE_RANGES: [RangeChoice; 4] = [
+    RangeChoice {
+        days: 1,
+        label: "today",
+    },
+    RangeChoice {
+        days: 7,
+        label: "7 days",
+    },
+    RangeChoice {
+        days: 30,
+        label: "30 days",
+    },
+    RangeChoice {
+        days: 0,
+        label: "all",
+    },
+];
+
+struct UsageSection {
+    /// The column heading, which is also what the grouping means: `model`,
+    /// `lane`, `backend`, `day`.
+    group: &'static str,
+    rows: Vec<UsageRow>,
+}
+
+/// One line of a usage table, entirely pre-formatted — including the em dash
+/// for "nothing reported". The template does no arithmetic and makes no
+/// rounding decision; a figure printed two different ways on one page is how a
+/// report stops being trusted.
+struct UsageRow {
+    key: String,
+    /// `Some("4 unreported")` when some turns in this row carried no counters.
+    /// Named rather than folded into the count, because a turn nobody measured
+    /// and a turn that cost nothing are not the same fact.
+    unmeasured: Option<String>,
+    turns: String,
+    input: String,
+    output: String,
+    cached_read: String,
+    cached_write: String,
+    reported: String,
+    estimated: String,
+}
+
+/// One turn in the ledger. Same rule as `UsageRow`: strings only.
+struct TurnLine {
+    when: String,
+    lane: String,
+    backend: String,
+    model: String,
+    /// False when Krypton recorded the *configured* model rather than one the
+    /// agent confirmed. Shown, because an unconfirmed id is an intent and may
+    /// not be what actually ran — silently printing it as fact would put a
+    /// wrong model name next to a real charge.
+    model_confirmed: bool,
+    input: String,
+    output: String,
+    cached_read: String,
+    /// Context window at the end of the turn, as a percentage. This is a level,
+    /// not a spend, which is why it is never summed into a column above.
+    context: String,
+    duration: String,
+    stop_reason: String,
+    origin: String,
+    /// The adapter's own figure, or an em dash. Never an estimate: an estimate
+    /// is a property of a rate table applied to a whole bucket, and printing
+    /// one per row would invite adding a column that must not be added.
+    cost: String,
+}
+
+/// Digits in groups of three. The page's rule is exact figures over rounded
+/// ones, and `4210331` is exact but unreadable — `4,210,331` is both.
+fn group_digits(n: i64) -> String {
+    let (sign, mut rest) = if n < 0 {
+        ("-", n.unsigned_abs().to_string())
+    } else {
+        ("", n.to_string())
+    };
+    let mut out = String::with_capacity(rest.len() + rest.len() / 3 + 1);
+    while rest.len() > 3 {
+        let head = rest.split_off(rest.len() - 3);
+        out.insert_str(0, &head);
+        out.insert(0, ',');
+    }
+    out.insert_str(0, &rest);
+    out.insert_str(0, sign);
+    out
+}
+
+/// Four decimal places, everywhere, or an em dash. A per-turn charge is often
+/// under a cent, and rounding it to two would print a stream of `0.00` next to
+/// a total that is plainly not zero.
+fn fmt_money(amount: Option<f64>) -> String {
+    match amount {
+        Some(a) => format!("{a:.4}"),
+        None => "—".to_string(),
+    }
+}
+
+/// A turn's wall time, at the precision a person compares turns with.
+fn fmt_duration(ms: Option<i64>) -> String {
+    match ms {
+        Some(ms) if ms >= 60_000 => format!("{}m {:02}s", ms / 60_000, (ms % 60_000) / 1000),
+        Some(ms) if ms >= 1_000 => format!("{:.1}s", ms as f64 / 1000.0),
+        Some(ms) if ms >= 0 => format!("{ms}ms"),
+        _ => "—".to_string(),
+    }
+}
+
+/// How full the context window was when the turn ended. A percentage, because
+/// the raw pair means nothing without the size beside it and the size is the
+/// same for every turn of a session.
+fn fmt_context(used: Option<i64>, size: Option<i64>) -> String {
+    match (used, size) {
+        (Some(used), Some(size)) if size > 0 => {
+            format!("{}%", (used * 100).saturating_add(size / 2) / size)
+        }
+        _ => "—".to_string(),
+    }
+}
+
+/// The bucket totals, formatted. `key` is whatever names the row — a model id,
+/// a lane, or the range label on the summary line.
+fn usage_row(key: String, totals: &crate::usage::UsageTotals) -> UsageRow {
+    // When NO turn in the bucket carried counters, its token sums are zero by
+    // construction — and printing `0` there says the bucket was free, which is
+    // the one thing the whole design refuses to say. A lane whose adapter never
+    // reports is unmeasured, not idle, so the cells go blank and the turn count
+    // carries the fact instead.
+    let measured = totals.turns_without_tokens < totals.turns;
+    let tokens = |n: i64| {
+        if measured {
+            group_digits(n)
+        } else {
+            "—".to_string()
+        }
+    };
+    UsageRow {
+        key,
+        unmeasured: match totals.turns_without_tokens {
+            0 => None,
+            n if n == totals.turns => Some("none reported".to_string()),
+            n => Some(format!("{n} unreported")),
+        },
+        turns: group_digits(totals.turns),
+        input: tokens(totals.input_tokens),
+        output: tokens(totals.output_tokens),
+        cached_read: tokens(totals.cached_read_tokens),
+        cached_write: tokens(totals.cached_write_tokens),
+        // A bucket where no adapter reported a cost prints a dash, not `0.0000`
+        // — the same distinction the estimate column already makes.
+        reported: fmt_money((totals.reported_cost_turns > 0).then_some(totals.reported_cost)),
+        estimated: fmt_money(totals.estimated_cost),
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct UsageQuery {
+    #[serde(default)]
+    days: Option<i64>,
+}
+
+/// `GET /p/{project}/usage` — what a range cost, grouped four ways, over the
+/// ledger of the turns it was made of.
+///
+/// Xenon does not push to browsers (SSE is out of scope in spec 212), so this
+/// is current as of its last load. "Realtime" in spec 214 means Krypton→Xenon:
+/// a turn is on the server within a second of ending, and a reload sees it.
+async fn usage_page(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(project): Path<String>,
+    Query(query): Query<UsageQuery>,
+) -> AppResult<Html<String>> {
+    let (actor, nav) = viewer(&state, &headers);
+    let conn = state.db();
+    let project_id = readable_project(&conn, actor.as_ref(), &project)?;
+
+    let days = query.days.unwrap_or(7).clamp(0, 3650);
+    // `days = 0` is "everything"; any other value is a window ending now. The
+    // bound is in epoch MILLISECONDS because that is the unit a turn carries.
+    let from = if days == 0 {
+        None
+    } else {
+        Some((crate::util::now() - days * 86_400) * 1000)
+    };
+    let range_label = USAGE_RANGES
+        .iter()
+        .find(|r| r.days == days)
+        .map(|r| r.label.to_string())
+        .unwrap_or_else(|| format!("{days} days"));
+
+    // The four axes a spend question is ever asked along: which model ate the
+    // budget, which lane is hot, which backend, and when. `backend` was already
+    // a grouping the API served and the page did not offer, so the one question
+    // a mixed fleet asks first — "is Codex or Claude costing me this?" — had no
+    // answer in the browser.
+    let mut sections = Vec::new();
+    let mut unpriced = Vec::new();
+    let mut totals = crate::usage::UsageTotals::default();
+    for group in ["model", "lane", "backend", "day"] {
+        let out = crate::usage::aggregate(
+            &conn,
+            &state.prices,
+            &project,
+            &project_id,
+            &crate::usage::UsageQuery {
+                from,
+                to: None,
+                group: Some(group.to_string()),
+            },
+        )?;
+        // Every grouping sums the same rows, so the totals are identical; take
+        // them (and the unpriced list) from the first pass only.
+        if sections.is_empty() {
+            totals = out.totals.clone();
+            unpriced = out.unpriced.clone();
+        }
+        sections.push(UsageSection {
+            group,
+            rows: out
+                .buckets
+                .into_iter()
+                .map(|b| {
+                    let key = if b.key.is_empty() {
+                        "(unreported)".to_string()
+                    } else {
+                        b.key
+                    };
+                    usage_row(key, &b.totals)
+                })
+                .collect(),
+        });
+    }
+
+    // One row more than a page, so "there are older turns" is a fact rather
+    // than a guess from a full page.
+    let mut recent = crate::usage::recent_turns(&conn, &project_id, from, RECENT_TURNS + 1)?;
+    let recent_truncated = recent.len() as i64 > RECENT_TURNS;
+    recent.truncate(RECENT_TURNS as usize);
+
+    let (title, css_url, app_js_url) = chrome(&format!("{project} usage"));
+    render(&UsageTemplate {
+        title,
+        css_url,
+        app_js_url,
+        crumbs: vec![
+            Crumb {
+                label: "projects".to_string(),
+                href: Some("/".to_string()),
+            },
+            Crumb {
+                label: project.clone(),
+                href: Some(format!("/p/{project}")),
+            },
+            Crumb {
+                label: "usage".to_string(),
+                href: None,
+            },
+        ],
+        nav,
+        project,
+        days,
+        turns: totals.turns,
+        currency: totals.currency.clone(),
+        // The summary line names the range it sums, so the table stands alone
+        // if it is copied out of the page.
+        total: usage_row(range_label, &totals),
+        ranges: &USAGE_RANGES,
+        sections,
+        recent: recent
+            .into_iter()
+            .map(|t| TurnLine {
+                when: crate::util::format_ymd_hms(t.at / 1000),
+                lane: if t.lane.is_empty() {
+                    "—".to_string()
+                } else {
+                    t.lane
+                },
+                backend: if t.backend.is_empty() {
+                    "—".to_string()
+                } else {
+                    t.backend
+                },
+                model: t
+                    .model
+                    .filter(|m| !m.is_empty())
+                    .unwrap_or_else(|| "—".to_string()),
+                model_confirmed: t.model_confirmed,
+                // An unmeasured turn shows a dash in all three token columns.
+                // Zero would be a claim about spend that the adapter never
+                // made, and would read as a free turn.
+                input: if t.has_tokens {
+                    group_digits(t.input)
+                } else {
+                    "—".to_string()
+                },
+                output: if t.has_tokens {
+                    group_digits(t.output)
+                } else {
+                    "—".to_string()
+                },
+                cached_read: if t.has_tokens {
+                    group_digits(t.cached_read + t.cached_write)
+                } else {
+                    "—".to_string()
+                },
+                context: fmt_context(t.context_used, t.context_size),
+                duration: fmt_duration(t.duration_ms),
+                stop_reason: if t.stop_reason.is_empty() {
+                    "—".to_string()
+                } else {
+                    t.stop_reason
+                },
+                origin: t.origin,
+                cost: fmt_money(t.cost_amount),
+            })
+            .collect(),
+        recent_truncated,
+        unpriced,
+    })
+}
+
 /// The two asset URLs every page needs. Kept in one place so a template cannot
 /// be added without them.
 fn chrome(title: &str) -> (String, String, String) {
@@ -226,6 +590,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/activity", get(activity_page))
         .route("/settings/tokens", get(tokens_page))
         .route("/p/{project}", get(project_page))
+        .route("/p/{project}/usage", get(usage_page))
         .route("/r/{project}/{kind}/{*slug}", get(resource_page))
 }
 

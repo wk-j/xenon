@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+
+{#- LLM usage for a project (Krypton spec 214).
+
+    Tables, not charts. The questions this page answers — which model ate the
+    budget, which lane is hot, what did last week cost — are read off exact
+    numbers, and a chart would round them away. Every figure here is a sum of
+    per-turn rows the client posted as they happened.
+
+    Reported and estimated cost sit in SEPARATE columns and are never added
+    together. One is what the provider told us; the other is what our own rate
+    table computes. Merging them would launder an estimate into a fact.
+
+    Nothing here does arithmetic: every cell arrives as a finished string, so a
+    figure cannot be rounded one way in a total and another in a row. -#}
+
+{% block content %}
+<h2 class="meta">{{ project }}</h2>
+
+{#- The project's two pages, each reachable from the other. Usage used to be
+    linkable only from a URL someone had already been told about. -#}
+<div class="tabs">
+  <a href="/p/{{ project }}">resources</a>
+  <a href="/p/{{ project }}/usage" class="on" aria-current="page">llm usage</a>
+</div>
+
+<div class="kinds kinds--events">
+  {%- for r in ranges %}
+  <a href="/p/{{ project }}/usage?days={{ r.days }}"
+     class="{% if r.days == days %}on{% endif %}">{{ r.label }}</a>
+  {%- endfor %}
+</div>
+
+{% if turns == 0 %}
+<p class="empty">
+  no turns in this range — krypton streams one row per turn as it ends,
+  so widen the range above or check <code>[usage_log]</code> in krypton.toml
+</p>
+{% else %}
+
+{#- Every table here is wider than a phone. Each one scrolls inside its own
+    box so the PAGE never does — a horizontally scrolling document would carry
+    the nav and the range chips off-screen with it. -#}
+<div class="scroll">
+<table class="data data--num">
+  <thead>
+    <tr>
+      <th>total</th><th>turns</th><th>input</th><th>output</th>
+      <th>cache read</th><th>cache write</th>
+      <th>reported {{ currency }}</th><th>estimated {{ currency }}</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="txt">{{ total.key }}</td>
+      <td>{{ total.turns }}{% if let Some(unmeasured) = total.unmeasured %}
+        <span class="meta">({{ unmeasured }})</span>{% endif %}</td>
+      <td>{{ total.input }}</td>
+      <td>{{ total.output }}</td>
+      <td>{{ total.cached_read }}</td>
+      <td>{{ total.cached_write }}</td>
+      <td>{{ total.reported }}</td>
+      <td>{{ total.estimated }}</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+{#- The same four columns under four different keys. One shape, so a reader who
+    has understood the first table has understood all of them. -#}
+{%- for section in sections %}
+<h3 class="meta">by {{ section.group }}</h3>
+<div class="scroll">
+<table class="data data--num">
+  <thead>
+    <tr>
+      <th>{{ section.group }}</th><th>turns</th><th>input</th><th>output</th>
+      <th>cache read</th><th>cache write</th>
+      <th>reported {{ currency }}</th><th>estimated {{ currency }}</th>
+    </tr>
+  </thead>
+  <tbody>
+    {%- for row in section.rows %}
+    <tr>
+      <td class="txt">{{ row.key }}</td>
+      <td>{{ row.turns }}{% if let Some(unmeasured) = row.unmeasured %}
+        <span class="meta">({{ unmeasured }})</span>{% endif %}</td>
+      <td>{{ row.input }}</td>
+      <td>{{ row.output }}</td>
+      <td>{{ row.cached_read }}</td>
+      <td>{{ row.cached_write }}</td>
+      <td>{{ row.reported }}</td>
+      <td>{{ row.estimated }}</td>
+    </tr>
+    {%- endfor %}
+  </tbody>
+</table>
+</div>
+{%- endfor %}
+
+{#- The ledger the sums above are made of. Without it the page can say a range
+    cost $40 and offer nothing to point at when that looks wrong. It is also
+    the only place the per-turn facts that cannot be summed appear at all:
+    why the turn stopped, who started it, and how full the context was.
+
+    No estimated-cost column here on purpose. An estimate is a rate table
+    applied to a bucket of tokens; printing one per row would invite adding a
+    column that must never be added to the reported one. -#}
+<h3 class="meta">turns{% if recent_truncated %} · newest {{ recent.len() }}{% endif %}</h3>
+<div class="scroll">
+<table class="data data--num data--ledger">
+  <thead>
+    <tr>
+      <th>when (utc)</th><th>lane</th><th>backend</th><th>model</th>
+      <th>input</th><th>output</th><th>cached</th>
+      <th title="context window in use when the turn ended">ctx</th>
+      <th>took</th><th>stop</th><th>from</th><th>reported {{ currency }}</th>
+    </tr>
+  </thead>
+  <tbody>
+    {%- for t in recent %}
+    <tr>
+      <td class="txt">{{ t.when }}</td>
+      <td class="txt">{{ t.lane }}</td>
+      <td class="txt">{{ t.backend }}</td>
+      {#- An unconfirmed id is what the config asked for, not what the agent
+          said it ran. Marked, so a wrong model name never sits unqualified
+          next to a real charge. -#}
+      <td class="txt">{{ t.model }}{% if !t.model_confirmed %}<span class="meta"
+        title="configured model; the agent never confirmed it">?</span>{% endif %}</td>
+      <td>{{ t.input }}</td>
+      <td>{{ t.output }}</td>
+      <td>{{ t.cached_read }}</td>
+      <td>{{ t.context }}</td>
+      <td>{{ t.duration }}</td>
+      <td class="txt">{{ t.stop_reason }}</td>
+      <td class="txt">{{ t.origin }}</td>
+      <td>{{ t.cost }}</td>
+    </tr>
+    {%- endfor %}
+  </tbody>
+</table>
+</div>
+{% if recent_truncated %}
+<p class="meta">older turns are in the totals above but not listed here — narrow
+  the range to read them</p>
+{% endif %}
+
+{#- An unpriced model is named rather than left as a blank cell, so a missing
+    estimate reads as "no rate for this" and never as "this was free". -#}
+{% if !unpriced.is_empty() %}
+<p class="notice">
+  no rate for {{ unpriced|join(", ") }} — their tokens are counted above but
+  carry no estimate; add them to <code>prices.json</code> to price them
+</p>
+{% endif %}
+
+{% endif %}
+{% endblock %}

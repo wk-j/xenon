@@ -8,11 +8,17 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crate::blob::BlobStore;
 use crate::config::Config;
 use crate::error::{AppError, AppResult};
+use crate::price::PriceTable;
 
 pub struct AppState {
     pub config: Config,
     db: Mutex<Connection>,
     pub blobs: BlobStore,
+    /// Model rate table, read once at boot. Cost is computed from it on every
+    /// read rather than stored on a row, so correcting a price corrects
+    /// history (ADR-0018). Reloading is a restart, which is honest: an
+    /// operator editing rates wants to see the new numbers deliberately.
+    pub prices: PriceTable,
     /// Login attempt timestamps keyed by `<ip>|<email>`, for rate limiting.
     pub login_attempts: Mutex<HashMap<String, Vec<i64>>>,
     /// When the activity log was last pruned. Retention is enforced from the
@@ -24,10 +30,12 @@ pub struct AppState {
 impl AppState {
     pub fn new(config: Config, db: Connection) -> AppResult<Arc<Self>> {
         let blobs = BlobStore::new(config.blob_dir())?;
+        let prices = PriceTable::load(&config.prices_path()).map_err(AppError::internal)?;
         Ok(Arc::new(Self {
             config,
             db: Mutex::new(db),
             blobs,
+            prices,
             login_attempts: Mutex::new(HashMap::new()),
             last_activity_prune: AtomicI64::new(0),
         }))

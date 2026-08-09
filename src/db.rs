@@ -8,7 +8,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 pub fn open(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
@@ -76,6 +76,8 @@ fn migrate(conn: &Connection) -> Result<(), String> {
         conn.execute_batch(SCHEMA_V2)
             .map_err(|e| format!("apply schema v2: {e}"))?;
         apply_v3(conn)?;
+        conn.execute_batch(SCHEMA_V4)
+            .map_err(|e| format!("apply schema v4: {e}"))?;
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
             .map_err(|e| format!("stamp schema version: {e}"))
     })();
@@ -282,6 +284,58 @@ UPDATE revision SET author_id = (
 ) WHERE author_id IS NULL;
 "#;
 
+/// v4 — per-turn LLM usage (spec 214 in the Krypton repo).
+///
+/// Deliberately its own table rather than another resource kind. A resource is
+/// a sealed snapshot of content-addressed files, so appending one 300-byte row
+/// to a day would mean re-uploading and re-sealing the whole day; and the
+/// questions asked of this data ("by model", "by lane", "last week") are
+/// aggregations, which is what SQL is for and what JSON blobs in `revision.meta`
+/// are not.
+///
+/// `id` is the CLIENT's key, and the primary key is `(project_id, id)`. That is
+/// what makes ingest idempotent: a row re-sent after a timeout the client could
+/// not interpret lands as a conflict, not as a second charge.
+///
+/// `received_at` is the server's own clock, kept beside the client's `at` for
+/// the same reason `uploaded_by` sits beside `origin` on a revision — one is
+/// asserted, the other observed, and merging them would launder the difference.
+const SCHEMA_V4: &str = r#"
+CREATE TABLE IF NOT EXISTS usage_turn (
+    id              TEXT NOT NULL,
+    project_id      TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+    at              INTEGER NOT NULL,
+    duration_ms     INTEGER,
+    hostname        TEXT NOT NULL DEFAULT '',
+    harness_id      TEXT NOT NULL DEFAULT '',
+    lane            TEXT NOT NULL DEFAULT '',
+    backend         TEXT NOT NULL DEFAULT '',
+    model           TEXT,
+    model_confirmed INTEGER NOT NULL DEFAULT 0,
+    session_id      TEXT,
+    turn_seq        INTEGER,
+    stop_reason     TEXT NOT NULL DEFAULT '',
+    origin          TEXT NOT NULL DEFAULT '',
+    has_tokens      INTEGER NOT NULL DEFAULT 0,
+    input_tokens    INTEGER,
+    output_tokens   INTEGER,
+    cached_read     INTEGER,
+    cached_write    INTEGER,
+    thought_tokens  INTEGER,
+    total_tokens    INTEGER,
+    context_used    INTEGER,
+    context_size    INTEGER,
+    cost_amount     REAL,
+    cost_currency   TEXT,
+    received_at     INTEGER NOT NULL,
+    uploaded_by     TEXT REFERENCES user(id) ON DELETE SET NULL,
+    PRIMARY KEY (project_id, id)
+);
+CREATE INDEX IF NOT EXISTS usage_turn_time_idx  ON usage_turn(project_id, at DESC);
+CREATE INDEX IF NOT EXISTS usage_turn_model_idx ON usage_turn(project_id, model, at DESC);
+CREATE INDEX IF NOT EXISTS usage_turn_lane_idx  ON usage_turn(project_id, lane, at DESC);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,8 +357,8 @@ mod tests {
             )
             .unwrap();
         // user, session, invite, token, project, resource, revision, rev_file,
-        // blob, event
-        assert_eq!(tables, 10, "expected the 10 schema tables");
+        // blob, event, usage_turn
+        assert_eq!(tables, 11, "expected the 11 schema tables");
     }
 
     /// Upgrading a database written before v3 must attribute every existing
