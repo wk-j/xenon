@@ -11,6 +11,10 @@
 #   scripts/dev.sh --reset      # wipe the database and blobs first
 #   PORT=9000 scripts/dev.sh    # different port
 #
+# State lives in ~/.config/xenon, NOT in this checkout: the dev instance and an
+# installed binary are then the same server, with the same accounts, whichever
+# directory either was started from.
+#
 # NOT for production: this sets XENON_INSECURE_COOKIES=1, which drops `Secure`
 # from the session cookie. Real deployments terminate TLS at a reverse proxy and
 # must not set it. See README.md.
@@ -19,7 +23,7 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
-DATA_DIR="${XENON_DATA_DIR:-./data}"
+DATA_DIR="${XENON_DATA_DIR:-$HOME/.config/xenon}"
 PORT="${PORT:-${XENON_PORT:-8787}}"
 CARGO_ARGS=""
 RESET=0
@@ -57,8 +61,8 @@ fi
 
 mkdir -p "$DATA_DIR"
 
-# Persist the secret so sessions behave consistently across restarts. 0600 and
-# inside the gitignored data dir, so it is never committed.
+# Persist the secret so sessions behave consistently across restarts. 0600, and
+# outside the checkout entirely, so it cannot be committed.
 SECRET_FILE="$DATA_DIR/.session-secret"
 if [ ! -f "$SECRET_FILE" ]; then
     umask 077

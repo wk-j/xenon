@@ -7,6 +7,21 @@
 
 use std::path::PathBuf;
 
+/// Where state lives when `XENON_DATA_DIR` says nothing: the database, the blob
+/// store, the price table, the session secret.
+///
+/// Deliberately **not** `./data`. A relative default ties a running instance to
+/// whichever directory it was launched from, so `cargo run` from the repo and
+/// `xenon` from anywhere else are two different servers with two different sets
+/// of accounts — and a `git clean` or a moved checkout takes published work with
+/// it. Anchoring on the home directory makes the instance a property of the
+/// user, not of a checkout.
+///
+/// `~/.config/xenon` regardless of platform, matching how the sibling Krypton
+/// app resolves `~/.config/krypton` rather than the platform-specific location.
+/// One path to remember across both, and one path to back up.
+const DATA_SUBDIR: &str = ".config/xenon";
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub port: u16,
@@ -34,8 +49,10 @@ const DEFAULT_ACTIVITY_RETENTION_DAYS: i64 = 90;
 impl Config {
     pub fn from_env() -> Result<Self, String> {
         let port = env_parse("XENON_PORT", 8787u16)?;
-        let data_dir =
-            PathBuf::from(std::env::var("XENON_DATA_DIR").unwrap_or_else(|_| "./data".to_string()));
+        let data_dir = match std::env::var("XENON_DATA_DIR") {
+            Ok(raw) if !raw.trim().is_empty() => PathBuf::from(raw),
+            _ => default_data_dir()?,
+        };
 
         let session_secret = std::env::var("XENON_SESSION_SECRET").unwrap_or_default();
         if session_secret.len() < 32 {
@@ -105,6 +122,17 @@ impl Config {
     }
 }
 
+/// `~/.config/xenon`, or an error naming the way out. A missing `HOME` is
+/// normal in a container, where the Dockerfile sets `XENON_DATA_DIR=/data`
+/// anyway — so say that rather than silently landing state somewhere the
+/// operator did not choose.
+fn default_data_dir() -> Result<PathBuf, String> {
+    match std::env::var("HOME") {
+        Ok(home) if !home.trim().is_empty() => Ok(PathBuf::from(home).join(DATA_SUBDIR)),
+        _ => Err("HOME is not set, so the data directory cannot be resolved — set XENON_DATA_DIR to an absolute path".to_string()),
+    }
+}
+
 fn env_flag(key: &str) -> bool {
     matches!(
         std::env::var(key).unwrap_or_default().as_str(),
@@ -120,5 +148,30 @@ fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> Result<T, String> {
             .trim()
             .parse::<T>()
             .map_err(|_| format!("{key} is not a valid value: {raw}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reads `HOME` rather than setting it: mutating the environment races
+    /// every other test in the process.
+    #[test]
+    fn the_default_data_dir_is_absolute_and_under_the_home_directory() {
+        let home = std::env::var("HOME").expect("tests run with HOME set");
+        let dir = default_data_dir().expect("HOME is set, so this resolves");
+
+        assert!(dir.is_absolute(), "{} must be absolute", dir.display());
+        assert!(
+            dir.starts_with(&home),
+            "{} must live under {home}",
+            dir.display()
+        );
+        assert!(
+            dir.ends_with("xenon"),
+            "{} must be xenon's own directory, not the whole config dir",
+            dir.display()
+        );
     }
 }

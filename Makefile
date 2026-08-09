@@ -4,7 +4,7 @@ help:
 	@echo "make dev      run locally on :8787 (generates a session secret on first run)"
 	@echo "make watch    like dev, but rebuild and restart on every save"
 	@echo "make release  run locally, optimized build"
-	@echo "make reset    wipe ./data (accounts, tokens, published resources) then run"
+	@echo "make reset    wipe ~/.config/xenon (accounts, tokens, published resources) then run"
 	@echo "make test     unit + end-to-end tests"
 	@echo "make lint     clippy, warnings denied"
 	@echo "make fmt      rustfmt in place"

@@ -319,8 +319,9 @@ measured it.
 
 ### Model prices
 
-Cost is computed on **read**, from `$XENON_DATA_DIR/prices.json`
-(`XENON_PRICES_FILE` overrides), so correcting a rate corrects history. Copy
+Cost is computed on **read**, from `$XENON_DATA_DIR/prices.json` — by default
+`~/.config/xenon/prices.json` (`XENON_PRICES_FILE` overrides) — so correcting a
+rate corrects history. Copy
 `assets/prices.example.json` and replace its zeros with the figures from each
 provider's price page.
 

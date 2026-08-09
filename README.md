@@ -19,15 +19,21 @@ make dev
 ```
 
 That runs `scripts/dev.sh`, which generates a session secret on first run
-(persisted at `data/.session-secret`, mode 0600, gitignored), allows non-`Secure`
+(persisted at `~/.config/xenon/.session-secret`, mode 0600), allows non-`Secure`
 cookies so plain HTTP works on localhost, and serves on `:8787`.
 
 ```sh
 make dev                  # debug build
 make release              # optimized build
-make reset                # wipe ./data (prompts first), then start fresh
+make reset                # wipe ~/.config/xenon (prompts first), then start fresh
 PORT=9000 scripts/dev.sh  # different port
 ```
+
+**State lives in `~/.config/xenon`, not in this checkout** — the database, the
+blob store, the price table, and the session secret. So a dev build and an
+installed binary are the same server with the same accounts no matter which
+directory either was started from, and deleting the checkout does not delete
+published work. Point `XENON_DATA_DIR` elsewhere to override.
 
 **Development only** — `scripts/dev.sh` sets `XENON_INSECURE_COOKIES=1`. Real
 deployments terminate TLS at a reverse proxy and must not set it; see
@@ -55,7 +61,7 @@ when you paste it in.
 | Variable | Default | Meaning |
 |---|---|---|
 | `XENON_PORT` | `8787` | listen port (binds `0.0.0.0`) |
-| `XENON_DATA_DIR` | `./data` | holds `xenon.db` and `blobs/` |
+| `XENON_DATA_DIR` | `~/.config/xenon` | holds `xenon.db`, `blobs/`, `prices.json`, `.session-secret` |
 | `XENON_SESSION_SECRET` | — | **required**, ≥32 chars; refuses to start without it |
 | `XENON_MAX_BLOB_MB` | `64` | per-file upload cap |
 | `XENON_ALLOW_SIGNUP` | `0` | `1` opens registration to anyone |
@@ -126,7 +132,7 @@ per-turn facts that cannot be summed: why each turn stopped, what started it,
 how full its context was, and whether the model id was one the agent confirmed.
 
 Cost estimates need a rate table. Xenon ships **no prices of its own**: copy
-`assets/prices.example.json` to `$XENON_DATA_DIR/prices.json` and replace its
+`assets/prices.example.json` to `~/.config/xenon/prices.json` and replace its
 zeros with the figures from each provider's price page. Until you do, the page
 shows token counts and names each model as unpriced — a blank column is honest,
 an invented total is not. Prices are applied on read, so fixing a rate fixes
