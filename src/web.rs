@@ -5,9 +5,9 @@
 // the server. House rules that apply: data is mono / prose is sans, no nested
 // cards, no left-accent rails, and paths keep their own case.
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query, RawQuery, State};
 use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use rusqlite::{Connection, OptionalExtension};
@@ -491,7 +491,7 @@ async fn usage_page(
         crumbs: vec![
             Crumb {
                 label: "projects".to_string(),
-                href: Some("/".to_string()),
+                href: Some("/projects".to_string()),
             },
             Crumb {
                 label: project.clone(),
@@ -583,11 +583,19 @@ fn render<T: askama::Template>(t: &T) -> AppResult<Html<String>> {
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/", get(index))
+        // The feed is the home page: opening xenon should answer "what has
+        // happened" before "what exists". The project list is one click away and
+        // is the same page it always was, now at its own URL.
+        .route("/", get(activity_page))
+        .route("/projects", get(index))
+        // `/activity` was the feed's address for its whole life — in bookmarks,
+        // in docs, and in every link already published. Redirect rather than
+        // serve, so the feed has exactly one canonical URL and filter chips
+        // cannot drift between two copies of the same page.
+        .route("/activity", get(activity_moved))
         .route("/login", get(login_page))
         .route("/logout", post(logout))
         .route("/register", get(register_page))
-        .route("/activity", get(activity_page))
         .route("/settings/tokens", get(tokens_page))
         .route("/p/{project}", get(project_page))
         .route("/p/{project}/usage", get(usage_page))
@@ -692,6 +700,19 @@ pub struct ActivityPageQuery {
     project: Option<String>,
     kind: Option<String>,
     cursor: Option<i64>,
+}
+
+/// `/activity` → `/`, carrying the query string so a bookmarked filter or a
+/// pasted "older" link lands where it meant to.
+///
+/// 303 rather than 301: a permanent redirect is cached by the browser until it
+/// is cleared by hand, which would make putting the feed back at `/activity`
+/// look broken on exactly the machines that had visited it.
+async fn activity_moved(RawQuery(query): RawQuery) -> Redirect {
+    match query.filter(|q| !q.is_empty()) {
+        Some(q) => Redirect::to(&format!("/?{q}")),
+        None => Redirect::to("/"),
+    }
 }
 
 /// The feed, as a document. Reads through `event::query` so the page and
@@ -867,7 +888,7 @@ async fn project_page(
         crumbs: vec![
             Crumb {
                 label: "projects".to_string(),
-                href: Some("/".to_string()),
+                href: Some("/projects".to_string()),
             },
             Crumb {
                 label: project.clone(),
@@ -933,7 +954,7 @@ async fn resource_page(
     let crumbs = vec![
         Crumb {
             label: "projects".to_string(),
-            href: Some("/".to_string()),
+            href: Some("/projects".to_string()),
         },
         Crumb {
             label: project.clone(),

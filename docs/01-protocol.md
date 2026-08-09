@@ -208,10 +208,15 @@ agent-authored and untrusted.
 
 ## Browse
 
-`/` projects · `/p/<project>` resources, filterable by kind ·
-`/p/<project>/usage` the LLM usage ledger · `/r/<project>/<kind>/<slug>` the
-resource · `/r/<project>/<kind>/<slug>/@<seq>` a pinned revision · `/activity`
-the feed · `/register` · `/login` · `POST /logout` · `/settings/tokens`.
+`/` the activity feed · `/projects` the project list · `/p/<project>` resources,
+filterable by kind · `/p/<project>/usage` the LLM usage ledger ·
+`/r/<project>/<kind>/<slug>` the resource ·
+`/r/<project>/<kind>/<slug>/@<seq>` a pinned revision · `/register` · `/login` ·
+`POST /logout` · `/settings/tokens`.
+
+The feed is the home page: opening the server answers *what has happened* before
+*what exists*. `/activity` was its address until then and answers `303` to `/`,
+query string intact, so a bookmarked filter still lands on the rows it named.
 
 A project has two pages — its resources and its usage — and each links to the
 other. They are peers, not a filter of one another: usage is a second body of

@@ -101,6 +101,24 @@ impl Server {
         (status, String::from_utf8_lossy(&bytes).to_string())
     }
 
+    /// A browse-UI page whose answer is a redirect: the interesting part is
+    /// where it sends the reader, which `get_html` throws away.
+    async fn get_location(&self, path: &str) -> (StatusCode, String) {
+        let response = self
+            .app
+            .clone()
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        (response.status(), location)
+    }
+
     /// A browse-UI form post. Unlike `post`, the interesting parts of the answer
     /// are the redirect target and the cookie it clears, not a JSON body.
     async fn post_web(&self, path: &str, session: Option<&str>) -> (StatusCode, String, String) {
@@ -1313,7 +1331,7 @@ async fn the_project_list_renders_from_a_template_and_escapes_slugs() {
         .mint_token(&session, json!(["resource:write", "resource:read"]))
         .await;
 
-    let (_, empty) = server.get_html("/", Some(&session)).await;
+    let (_, empty) = server.get_html("/projects", Some(&session)).await;
     assert!(
         empty.contains("no projects yet"),
         "signed-in empty state: {empty}"
@@ -1334,7 +1352,7 @@ async fn the_project_list_renders_from_a_template_and_escapes_slugs() {
         )
         .await;
 
-    let (status, html) = server.get_html("/", Some(&session)).await;
+    let (status, html) = server.get_html("/projects", Some(&session)).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("href=\"/p/wk-j.krypton\""), "{html}");
     assert!(html.contains("1 resource ·"), "singular, not '1 resources'");
@@ -1543,9 +1561,13 @@ async fn deep_pages_carry_a_breadcrumb_trail_back_to_the_root() {
     let (_, root) = server.get_html("/", Some(&session)).await;
     assert!(!root.contains("nav class=\"crumbs\""), "{root}");
 
-    // A project links back to the project list.
+    // A project links back to the project list, which is `/projects` — the root
+    // is the activity feed and is nobody's parent.
     let (_, project) = server.get_html("/p/krypton", Some(&session)).await;
-    assert!(project.contains("<a href=\"/\">projects</a>"), "{project}");
+    assert!(
+        project.contains("<a href=\"/projects\">projects</a>"),
+        "{project}"
+    );
     assert!(
         project.contains("crumbs__here\" aria-current=\"page\">krypton"),
         "the current page must not link to itself: {project}"
@@ -1556,7 +1578,7 @@ async fn deep_pages_carry_a_breadcrumb_trail_back_to_the_root() {
         .get_html("/r/krypton/review/2026-08-08-a", Some(&session))
         .await;
     assert!(
-        resource.contains("<a href=\"/\">projects</a>"),
+        resource.contains("<a href=\"/projects\">projects</a>"),
         "{resource}"
     );
     assert!(
@@ -1889,7 +1911,8 @@ async fn the_activity_page_renders_and_pages() {
             .await;
     }
 
-    let (status, html) = server.get_html("/activity", Some(&session)).await;
+    // The feed is the home page.
+    let (status, html) = server.get_html("/", Some(&session)).await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("feed__day\">today"), "day heading: {html}");
     assert!(html.contains("artifact 2"), "{html}");
@@ -1935,6 +1958,62 @@ async fn the_activity_page_renders_and_pages() {
         )
         .await;
     assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+}
+
+/// The feed took over the root, so the two pages that moved must both still be
+/// reachable — and every link the feed prints must point at its new address, or
+/// a filter click would bounce through the redirect on every chip.
+#[tokio::test]
+async fn the_home_page_is_the_feed_and_the_project_list_moved_to_its_own_url() {
+    let server = Server::start();
+    let session = server.register_first().await;
+
+    let (status, home) = server.get_html("/", Some(&session)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        home.contains("kinds--events"),
+        "the root must render the feed, not the project list: {home}"
+    );
+    assert!(
+        !home.contains("no projects yet"),
+        "the project list must not still be at the root: {home}"
+    );
+
+    let (status, projects) = server.get_html("/projects", Some(&session)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(projects.contains("no projects yet"), "{projects}");
+
+    // The nav offers both, and names the root as activity.
+    assert!(home.contains("<a href=\"/\">activity</a>"), "{home}");
+    assert!(
+        home.contains("<a href=\"/projects\">projects</a>"),
+        "{home}"
+    );
+
+    // Filter chips and the pager address the feed at `/`, not at the old URL.
+    assert!(
+        !home.contains("href=\"/activity"),
+        "a link still points at the pre-move feed URL: {home}"
+    );
+    assert!(
+        home.contains("href=\"/?kind=resource.publish\""),
+        "the kind chips must filter in place: {home}"
+    );
+
+    // The old address keeps working for anything already bookmarked or linked,
+    // filters and cursor included.
+    let (status, to) = server.get_location("/activity").await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(to, "/");
+
+    let (status, to) = server
+        .get_location("/activity?kind=resource.publish&project=krypton")
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        to, "/?kind=resource.publish&project=krypton",
+        "a bookmarked filter must survive the move"
+    );
 }
 
 /// Signing out and revoking a token are the two account events a reader is most

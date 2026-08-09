@@ -26,10 +26,11 @@
       three static links, which offered "sign in" to someone already signed in
       and a `tokens` link that bounced an anonymous reader straight back. -#}
   <nav>
-    <a href="/">projects</a>
-    {#- Activity is visible to everyone: an anonymous visitor to a public
-        instance sees the public slice of it. -#}
-    <a href="/activity">activity</a>
+    {#- Activity is the home page, so the logo and the first nav link are the
+        same destination. It is visible to everyone: an anonymous visitor to a
+        public instance sees the public slice of it. -#}
+    <a href="/">activity</a>
+    <a href="/projects">projects</a>
     {%- if nav.signed_in %}
     <a href="/settings/tokens">tokens</a>
     <span class="top__who">{{ nav.who }}</span>

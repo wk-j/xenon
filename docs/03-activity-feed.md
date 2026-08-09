@@ -190,7 +190,11 @@ WHERE (e.audience = 'project' AND (p.is_public = 1 OR p.owner_id = :me))
 Anonymous callers pass `:me = ''` and match only public-project rows. An admin sees everything,
 which is the norm for a self-hosted instance and the only way the security rows are useful.
 
-### `/activity` page
+### The feed page
+
+Shipped at `/activity`; it became the **home page** at `/` in a later change, with
+`/activity` kept as a `303` so nothing already linked broke. Everything below still
+describes it.
 
 Server-rendered, no JavaScript, matching the rest of the browse UI:
 
@@ -202,8 +206,9 @@ Server-rendered, no JavaScript, matching the rest of the browse UI:
 - **Paging** — an `older →` link carrying `?before=`, so paging works without JS.
 - **Empty state** — "no activity yet — push something from krypton with `#push`" when signed in,
   "no public activity" when not.
-- Nav gains `activity` between `projects` and `tokens`, always visible (an anonymous visitor to a
-  public instance sees the public slice).
+- Nav gains `activity` beside `projects`, always visible (an anonymous visitor to a public instance
+  sees the public slice). Once the feed became the home page, `activity` moved to the front of the
+  nav and the project list took `/projects`.
 
 ### Retention
 
