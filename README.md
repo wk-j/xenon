@@ -12,7 +12,39 @@ shareable, and readable when Krypton is not running.
 Single static binary. SQLite for metadata, a content-addressed directory for
 file bytes. No external services.
 
+## Install
+
+```sh
+brew install wk-j/tap/xenon
+brew services start xenon
+```
+
+Homebrew builds from source — `rust` comes in as a build-only dependency — and
+installs two commands. `xenon` is the server. `xenon-serve` wraps it and mints
+the session secret on first run, so the service starts with nothing to configure;
+that is what `brew services` runs. Track `master` instead of the last tag with
+`brew install --HEAD wk-j/tap/xenon`.
+
+Reaching it over plain `http://localhost` needs one more thing first: the session
+cookie keeps its `Secure` flag, so the browser will not send it back and no login
+sticks — including the one that creates the admin. Run it in the foreground with
+the flag instead of as a service:
+
+```sh
+XENON_INSECURE_COOKIES=1 xenon-serve
+```
+
+`xenon-serve` deliberately does not set that itself. A background service cannot
+know it is only ever reached from this machine, and a `Secure`-less cookie on a
+box that later gets exposed is exactly the mistake the flag exists to make
+deliberate. Put it behind TLS instead and the flag is not needed at all; see
+[Deployment](#deployment).
+
+Either way, the next step is [First account](#first-account).
+
 ## Quick start
+
+Working on Xenon itself, from a checkout:
 
 ```sh
 make dev
@@ -39,10 +71,16 @@ published work. Point `XENON_DATA_DIR` elsewhere to override.
 deployments terminate TLS at a reverse proxy and must not set it; see
 [Deployment](#deployment).
 
-Then open <http://localhost:8787/register>. **The first account to register
-becomes the admin** — do this immediately, before the instance is reachable from
+## First account
+
+Open <http://localhost:8787/register>. **The first account to register becomes
+the admin** — do this immediately, before the instance is reachable from
 anywhere else. After that, registration requires an admin-issued invite code
 unless you set `XENON_ALLOW_SIGNUP=1`.
+
+The home page is the **activity feed** — what was published, revised, signed
+into, and minted, newest first and grouped by day. The project list lives at
+`/projects`, one click away in the nav.
 
 Mint a token at `/settings/tokens`, then point Krypton at it:
 
@@ -66,7 +104,7 @@ when you paste it in.
 | `XENON_MAX_BLOB_MB` | `64` | per-file upload cap |
 | `XENON_ALLOW_SIGNUP` | `0` | `1` opens registration to anyone |
 | `XENON_INSECURE_COOKIES` | `0` | `1` drops `Secure` from the session cookie — local HTTP development only |
-| `XENON_ACTIVITY_RETENTION_DAYS` | `90` | how long `/activity` keeps a row; `0` keeps everything |
+| `XENON_ACTIVITY_RETENTION_DAYS` | `90` | how long the activity feed keeps a row; `0` keeps everything |
 
 There is deliberately **no admin token and no seeded admin password**, so there
 is no long-lived credential to leak from a compose file or shell history.
@@ -147,7 +185,7 @@ design and its rationale live in the Krypton repo at
 ## Development
 
 ```sh
-make test    # 88 unit + 46 end-to-end tests
+make test    # 92 unit + 50 end-to-end tests
 make lint    # clippy, warnings denied
 make fmt     # rustfmt in place
 make check   # fmt --check + lint + test
