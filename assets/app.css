@@ -75,6 +75,16 @@ transition:background 160ms cubic-bezier(.22,1,.36,1),color 160ms cubic-bezier(.
 /* The selected filter is the one place a kind hue fills a shape: solid on the
    canvas colour, so "what am I looking at" is answered from across the room. */
 .kinds a.on{color:var(--bg);background:var(--k);border-color:var(--k)}
+/* The count rides inside its chip rather than beside it: it is an attribute of
+   the kind, not a second control. Dimmed against whatever colour the chip is
+   currently wearing, so the word stays the thing you read and click and the
+   number is the thing you weigh. */
+.kinds__n{margin-left:7px;opacity:.6;font-variant-numeric:tabular-nums}
+/* A kind with nothing in it keeps its place — the row is a fixed legend, and a
+   chip that comes and goes is harder to aim at than one that says zero — but it
+   steps back so the row reads as what is actually there. */
+.kinds a.is-empty{opacity:.45}
+.kinds a.is-empty:hover{opacity:1}
 @media (prefers-reduced-motion:reduce){.kinds a{transition:none}}
 /* A resource page is a stack: the title, what it is, then which file of it you
    are reading. The meta line carried no bottom margin because on a project card
@@ -327,3 +337,32 @@ letter-spacing:.04em}
 table.kv td{color:var(--text);word-break:break-word}
 pre.kv__json{margin:0;font:12px/1.45 var(--mono);color:var(--code-fg);
 background:var(--code-bg);border-radius:6px;padding:10px 12px;overflow-x:auto}
+
+/* A text file read in place — JSON evidence, a log, a config, source. One
+   surface with a full border and a header line, flat by house rule: no card
+   inside a card, no left accent rail. The body is one <span> per line so the
+   gutter number can be generated content, which keeps it out of anything you
+   select and copy — the same trick pre.rv-diff uses for diffs. */
+.filetext{border:1px solid var(--border);border-radius:8px;background:var(--code-bg);
+margin:1em 0;overflow:hidden}
+.filetext__bar{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin:0;
+padding:8px 12px;border-bottom:1px solid var(--border);font:11px var(--mono);color:var(--muted)}
+.filetext__path{color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+max-width:46ch}
+.filetext__lang{border:1px solid var(--border);border-radius:5px;padding:1px 7px;
+letter-spacing:.04em;text-transform:uppercase}
+.filetext__bar a{margin-left:auto;color:var(--muted)}
+.filetext__bar a:hover{color:var(--accent)}
+.filetext__body{margin:0;padding:10px 0;overflow-x:auto;tab-size:4;
+font:12px/1.55 var(--mono);color:var(--text);counter-reset:ln}
+/* min-width keeps a short line selectable across the full width; max-content
+   lets a long one push the scroll rather than wrap. */
+.filetext__body span{display:block;counter-increment:ln;width:max-content;min-width:100%;
+padding-right:14px}
+/* Sticky so the numbering stays put while a long line scrolls under it, and
+   raised above its own line — without the z-index the code slides over the
+   number rather than under it. */
+.filetext__body span::before{content:counter(ln);position:sticky;left:0;z-index:1;
+display:inline-block;width:4ch;padding:0 14px 0 12px;text-align:right;
+background:var(--code-bg);color:color-mix(in oklab,var(--muted) 72%,var(--code-bg));
+user-select:none;-webkit-user-select:none}

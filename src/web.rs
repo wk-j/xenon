@@ -142,9 +142,19 @@ struct ProjectTemplate {
     crumbs: Vec<Crumb>,
     nav: Nav,
     project: String,
-    kinds: &'static [&'static str],
+    kinds: Vec<KindTab>,
+    /// Sum over `kinds`, for the "all" chip.
+    total: i64,
     kind_filter: Option<String>,
     resources: Vec<ResourceCard>,
+}
+
+/// One chip in the kind filter row, carrying how much it would show. The count
+/// is over the whole project, not the current filter, so the row reads the same
+/// no matter which chip is on — it is a table of contents, not a result count.
+struct KindTab {
+    name: &'static str,
+    count: i64,
 }
 
 struct ResourceCard {
@@ -859,6 +869,30 @@ async fn project_page(
     let project_id = readable_project(&conn, actor.as_ref(), &project)?;
 
     let kind_filter = query.kind.as_deref().filter(|k| RESOURCE_KINDS.contains(k));
+
+    // Counted separately from the listing below because the listing is filtered
+    // and capped: the chips must report the project, not the page.
+    let mut counts = std::collections::HashMap::<String, i64>::new();
+    let mut count_stmt = conn.prepare(
+        "SELECT kind, count(*) FROM resource
+         WHERE project_id = ?1 AND head_revision IS NOT NULL
+         GROUP BY kind",
+    )?;
+    for row in count_stmt.query_map(rusqlite::params![project_id], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+    })? {
+        let (kind, n) = row?;
+        counts.insert(kind, n);
+    }
+    let kinds: Vec<KindTab> = RESOURCE_KINDS
+        .iter()
+        .map(|k| KindTab {
+            name: k,
+            count: counts.get(*k).copied().unwrap_or(0),
+        })
+        .collect();
+    let total = kinds.iter().map(|k| k.count).sum();
+
     let mut stmt = conn.prepare(
         "SELECT kind, slug, title, updated_at,
                 (SELECT count(*) FROM revision v
@@ -897,7 +931,8 @@ async fn project_page(
         ],
         nav,
         project: project.clone(),
-        kinds: &RESOURCE_KINDS,
+        kinds,
+        total,
         kind_filter: kind_filter.map(|k| k.to_string()),
         resources: rows
             .into_iter()
@@ -1102,16 +1137,7 @@ fn render_file(
         ));
     }
     if path.ends_with(".md") || content_type.contains("markdown") {
-        let conn = state.db();
-        let sha: Option<String> = conn
-            .query_row(
-                "SELECT sha256 FROM rev_file WHERE revision_id = ?1 AND path = ?2",
-                rusqlite::params![revision_id, path],
-                |r| r.get(0),
-            )
-            .optional()?;
-        drop(conn);
-        let Some(sha) = sha else {
+        let Some((sha, _)) = file_blob(state, revision_id, path)? else {
             return Ok("<p class=\"empty\">file not found</p>".to_string());
         };
         let bytes = state.blobs.read(&sha)?;
@@ -1125,11 +1151,201 @@ fn render_file(
             crate::render::render_review_blocks(&markdown_to_html(&text))
         ));
     }
-    Ok(format!(
-        "<p class=\"meta\"><a href=\"{}\">download {}</a></p>",
-        escape(&src),
-        escape(path)
-    ))
+    // Anything else that is text — JSON evidence, a log, a config, a source
+    // file — is laid out in place. It used to fall straight through to the
+    // download link below, so the one file a reviewer opened the page to read
+    // was the one file the page refused to show.
+    if let Some(lang) = text_language(content_type, path) {
+        let Some((sha, size)) = file_blob(state, revision_id, path)? else {
+            return Ok("<p class=\"empty\">file not found</p>".to_string());
+        };
+        if size > INLINE_TEXT_LIMIT {
+            return Ok(download_only(
+                &src,
+                path,
+                Some(&format!(
+                    "{} — too large to lay out here",
+                    human_size(size as u64)
+                )),
+            ));
+        }
+        let bytes = state.blobs.read(&sha)?;
+        // The content type is whatever the pushing client declared, and it
+        // defaults to application/octet-stream, so neither it nor the extension
+        // is proof of anything. The bytes decide: only a clean UTF-8 decode with
+        // no NUL in it is shown as text, and everything else stays a download
+        // rather than becoming a page full of replacement characters.
+        match String::from_utf8(bytes) {
+            Ok(text) if !text.contains('\0') => {
+                return Ok(render_text_file(&text, lang, path, &src));
+            }
+            _ => {
+                return Ok(download_only(&src, path, Some("not text after all")));
+            }
+        }
+    }
+
+    Ok(download_only(&src, path, None))
+}
+
+/// Largest text body laid out on the page. Above this the file stays a download
+/// link: the body is escaped and split into one element per line, so a
+/// multi-megabyte log would cost more DOM than any reader gets value from, and
+/// nothing above the fold reads better for having 40k siblings below it.
+const INLINE_TEXT_LIMIT: i64 = 512 * 1024;
+
+fn download_only(src: &str, path: &str, note: Option<&str>) -> String {
+    let note = match note {
+        Some(note) => format!(" · {}", escape(note)),
+        None => String::new(),
+    };
+    format!(
+        "<p class=\"meta\"><a href=\"{}\">download {}</a>{}</p>",
+        escape(src),
+        escape(path),
+        note
+    )
+}
+
+/// Digest and byte size of one file in a revision, without reading the body —
+/// so an oversized file is turned away before it is pulled into memory.
+fn file_blob(state: &AppState, revision_id: &str, path: &str) -> AppResult<Option<(String, i64)>> {
+    let conn = state.db();
+    let row = conn
+        .query_row(
+            "SELECT sha256, size FROM rev_file WHERE revision_id = ?1 AND path = ?2",
+            rusqlite::params![revision_id, path],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    Ok(row)
+}
+
+/// The language label for a file that should be read as text, or `None` for one
+/// that should not.
+///
+/// The path is consulted before the declared content type on purpose: a client
+/// that says nothing gets `application/octet-stream` by default, and that
+/// default is what sent every `.json` to the download link. An extension we
+/// recognise is the stronger signal of the two; the content type is the
+/// fallback for a file that has no extension worth reading.
+fn text_language(content_type: &str, path: &str) -> Option<&'static str> {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let ext = match name.rsplit_once('.') {
+        // A leading dot is the whole name (`.gitignore`), not an extension.
+        Some((stem, ext)) if !stem.is_empty() => ext.to_ascii_lowercase(),
+        _ => String::new(),
+    };
+    let by_ext = match ext.as_str() {
+        "json" | "jsonl" | "ndjson" | "jsonc" | "map" => Some("json"),
+        "yaml" | "yml" => Some("yaml"),
+        "toml" => Some("toml"),
+        "xml" | "xsd" | "xsl" | "plist" => Some("xml"),
+        "csv" => Some("csv"),
+        "tsv" => Some("tsv"),
+        "txt" | "text" | "log" | "out" | "err" | "lock" | "license" => Some("text"),
+        "ini" | "cfg" | "conf" | "properties" | "env" | "editorconfig" => Some("ini"),
+        "sh" | "bash" | "zsh" | "fish" | "bat" | "cmd" | "ps1" => Some("shell"),
+        "sql" => Some("sql"),
+        "diff" | "patch" => Some("diff"),
+        "rs" => Some("rust"),
+        "go" => Some("go"),
+        "py" => Some("python"),
+        "rb" => Some("ruby"),
+        "java" => Some("java"),
+        "kt" | "kts" => Some("kotlin"),
+        "ts" | "tsx" => Some("typescript"),
+        "js" | "mjs" | "cjs" | "jsx" => Some("javascript"),
+        "css" | "scss" | "less" => Some("css"),
+        "c" | "h" => Some("c"),
+        "cc" | "cpp" | "cxx" | "hpp" => Some("cpp"),
+        "cs" => Some("csharp"),
+        "php" => Some("php"),
+        "swift" => Some("swift"),
+        "hurl" => Some("text"),
+        _ => None,
+    };
+    if by_ext.is_some() {
+        return by_ext;
+    }
+    // Files whose whole name is the type.
+    let by_name = match name.to_ascii_lowercase().as_str() {
+        "dockerfile" | "containerfile" => Some("dockerfile"),
+        "makefile" | "justfile" => Some("makefile"),
+        "readme" | "license" | "licence" | "notice" | "changelog" | "authors" => Some("text"),
+        ".gitignore" | ".dockerignore" | ".gitattributes" | ".env" | ".editorconfig" => {
+            Some("text")
+        }
+        _ => None,
+    };
+    if by_name.is_some() {
+        return by_name;
+    }
+    let ct = content_type.to_ascii_lowercase();
+    let ct = ct.split(';').next().unwrap_or("").trim();
+    if ct.starts_with("text/") {
+        return Some("text");
+    }
+    // `application/vnd.foo+json`, `application/yaml`, and friends.
+    match ct {
+        _ if ct.contains("json") => Some("json"),
+        _ if ct.contains("yaml") => Some("yaml"),
+        _ if ct.contains("xml") => Some("xml"),
+        _ if ct.contains("javascript") => Some("javascript"),
+        _ if ct.contains("toml") => Some("toml"),
+        _ if ct.contains("x-sh") || ct.contains("shellscript") => Some("shell"),
+        _ => None,
+    }
+}
+
+/// Lay out a text file: a header line naming it, then the body, one element per
+/// line so the gutter number can live in `::before` — generated content is not
+/// picked up when the block is selected, so copying gives back the file and not
+/// the numbering. Same trick `pre.rv-diff` already uses.
+///
+/// The body is shown byte-for-byte. It is evidence as often as it is source, so
+/// nothing here re-indents it or pretty-prints JSON: what the page shows is what
+/// the download gives you.
+fn render_text_file(text: &str, lang: &str, path: &str, src: &str) -> String {
+    // A file ends with a newline; that terminator is not an extra empty line.
+    let body_text = text.strip_suffix('\n').unwrap_or(text);
+    let body_text = body_text.strip_suffix('\r').unwrap_or(body_text);
+
+    let mut lines = 0usize;
+    let mut body = String::with_capacity(text.len() + text.len() / 4 + 128);
+    for line in body_text.split('\n') {
+        lines += 1;
+        body.push_str("<span>");
+        body.push_str(&escape(line.strip_suffix('\r').unwrap_or(line)));
+        body.push_str("</span>");
+    }
+
+    format!(
+        "<div class=\"filetext\">\
+           <p class=\"filetext__bar\">\
+             <span class=\"filetext__path\">{path}</span>\
+             <span class=\"filetext__lang\">{lang}</span>\
+             <span class=\"filetext__size\">{lines} {noun} · {size}</span>\
+             <a href=\"{src}\">download</a>\
+           </p>\
+           <pre class=\"filetext__body\"><code class=\"language-{lang}\">{body}</code></pre>\
+         </div>",
+        path = escape(path),
+        lang = escape(lang),
+        lines = lines,
+        noun = if lines == 1 { "line" } else { "lines" },
+        size = escape(&human_size(text.len() as u64)),
+        src = escape(src),
+        body = body
+    )
+}
+
+fn human_size(bytes: u64) -> String {
+    match bytes {
+        b if b < 1024 => format!("{b} B"),
+        b if b < 1024 * 1024 => format!("{:.1} KB", b as f64 / 1024.0),
+        b => format!("{:.1} MB", b as f64 / (1024.0 * 1024.0)),
+    }
 }
 
 /// Renders markdown with raw HTML disabled. Bundle text is agent-authored and
@@ -1280,6 +1496,64 @@ mod tests {
             rendered.contains("<table>"),
             "table extension should be on: {rendered}"
         );
+    }
+
+    #[test]
+    fn extension_beats_the_declared_content_type() {
+        // The default type for a pushed file is application/octet-stream, and
+        // trusting it is exactly what used to send every .json to a download
+        // link instead of the page.
+        assert_eq!(
+            text_language("application/octet-stream", "evidence-node.json"),
+            Some("json")
+        );
+        assert_eq!(
+            text_language("application/octet-stream", "run.log"),
+            Some("text")
+        );
+        assert_eq!(
+            text_language("application/octet-stream", "Dockerfile"),
+            Some("dockerfile")
+        );
+        assert_eq!(text_language("text/plain", "notes"), Some("text"));
+        assert_eq!(
+            text_language("application/vnd.api+json", "payload"),
+            Some("json")
+        );
+    }
+
+    #[test]
+    fn binary_files_stay_a_download() {
+        assert_eq!(text_language("application/pdf", "report.pdf"), None);
+        assert_eq!(text_language("application/octet-stream", "trace.bin"), None);
+        assert_eq!(text_language("application/zip", "bundle.zip"), None);
+    }
+
+    #[test]
+    fn text_file_is_escaped_one_span_per_line() {
+        let html = render_text_file("{\"a\": \"<script>\"}\nsecond\n", "json", "e.json", "/f");
+        assert!(
+            !html.contains("<script>"),
+            "file bytes must not reach the page as markup: {html}"
+        );
+        assert!(html.contains("&lt;script&gt;"));
+        // Two lines, not three: the terminating newline is not a line of its own.
+        assert_eq!(html.matches("<span>").count(), 2);
+        assert!(html.contains("2 lines"));
+    }
+
+    #[test]
+    fn crlf_does_not_leave_a_stray_carriage_return() {
+        let html = render_text_file("a\r\nb\r\n", "text", "a.txt", "/f");
+        assert_eq!(html.matches("<span>").count(), 2);
+        assert!(!html.contains('\r'));
+    }
+
+    #[test]
+    fn human_size_reads_at_a_glance() {
+        assert_eq!(human_size(512), "512 B");
+        assert_eq!(human_size(2048), "2.0 KB");
+        assert_eq!(human_size(3 * 1024 * 1024), "3.0 MB");
     }
 
     #[test]

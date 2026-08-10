@@ -1530,6 +1530,72 @@ async fn html_artifacts_are_sandboxed_documents_opened_in_their_own_tab() {
     );
 }
 
+/// A text file is read on the page. Evidence pushed as `.json` used to render
+/// as nothing but a download link, which made the one file a reviewer opened
+/// the page for the one file the page would not show.
+#[tokio::test]
+async fn text_files_are_read_on_the_page_and_binaries_stay_downloads() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(&session, json!(["resource:write", "resource:read"]))
+        .await;
+
+    // Declared as octet-stream on purpose: that is the default a client gets
+    // when it says nothing, and trusting it is what hid these files before.
+    let evidence = "{\n  \"node\": \"<b>a</b>\",\n  \"ok\": true\n}\n";
+    let res = server
+        .post(
+            "/v1/projects/krypton/resources:inline",
+            Some(&token),
+            json!({
+                "kind": "analysis",
+                "slug": "2026-08-10-evidence",
+                "title": "evidence",
+                "contents": [
+                    { "path": "evidence-node.json",
+                      "content_base64": data_encoding::BASE64.encode(evidence.as_bytes()),
+                      "content_type": "application/octet-stream" },
+                    { "path": "shot.bin",
+                      "content_base64": data_encoding::BASE64.encode(&[0u8, 159, 146, 150]),
+                      "content_type": "application/octet-stream" }
+                ],
+            }),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::CREATED, "{:?}", res.body);
+
+    let (status, page) = server
+        .get_html(
+            "/r/krypton/analysis/2026-08-10-evidence?file=evidence-node.json",
+            Some(&session),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        page.contains("filetext__body"),
+        "not laid out inline: {page}"
+    );
+    assert!(page.contains("&quot;ok&quot;"), "body missing: {page}");
+    assert!(
+        page.contains("&lt;b&gt;a&lt;/b&gt;"),
+        "file bytes must reach the page escaped: {page}"
+    );
+    assert!(page.contains("4 lines"), "{page}");
+
+    // Bytes that are not text are still offered as a download rather than
+    // being forced through a lossy decode.
+    let (status, page) = server
+        .get_html(
+            "/r/krypton/analysis/2026-08-10-evidence?file=shot.bin",
+            Some(&session),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(page.contains("download shot.bin"), "{page}");
+    assert!(!page.contains("filetext__body"), "{page}");
+}
+
 /// Every page below the root offers one click back to each level above it, and
 /// the current page is text rather than a link to itself.
 #[tokio::test]
@@ -2486,6 +2552,71 @@ async fn the_usage_page_lists_the_turns_its_totals_are_made_of() {
     assert!(
         html.contains("the agent never confirmed it"),
         "an unconfirmed model id must be marked as intent, not fact: {html}"
+    );
+}
+
+/// The kind chips said which kinds exist but not how much of each, so the only
+/// way to learn a kind was empty was to click it. The counts are of the whole
+/// project, so they must not move when a filter is on.
+#[tokio::test]
+async fn the_kind_filter_chips_carry_their_counts() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server.mint_token(&session, json!(["resource:write"])).await;
+
+    async fn push(server: &Server, token: &str, kind: &str, slug: &str) {
+        server
+            .post(
+                "/v1/projects/krypton/resources:inline",
+                Some(token),
+                json!({
+                    "kind": kind,
+                    "slug": slug,
+                    "title": slug,
+                    "contents": [{
+                        "path": "note.md",
+                        "content_base64": data_encoding::BASE64.encode(b"body"),
+                        "content_type": "text/markdown",
+                    }],
+                }),
+            )
+            .await;
+    }
+
+    push(&server, &token, "artifact", "art-a").await;
+    push(&server, &token, "artifact", "art-b").await;
+    push(&server, &token, "review", "rev-a").await;
+
+    let (status, html) = server.get_html("/p/krypton", Some(&session)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains(">all<span class=\"kinds__n\">3</span>"),
+        "the reset chip counts everything in the project: {html}"
+    );
+    assert!(
+        html.contains(">artifact<span class=\"kinds__n\">2</span>"),
+        "each kind chip carries its own count: {html}"
+    );
+    assert!(
+        html.contains(">review<span class=\"kinds__n\">1</span>"),
+        "each kind chip carries its own count: {html}"
+    );
+    // A kind nobody has published is the case the counts exist for: the chip
+    // stays put and says zero instead of being a click that goes nowhere.
+    assert!(
+        html.contains(">analysis<span class=\"kinds__n\">0</span>"),
+        "an empty kind says zero rather than disappearing: {html}"
+    );
+
+    // Filtering narrows the list below, never the legend above it.
+    let (status, filtered) = server
+        .get_html("/p/krypton?kind=review", Some(&session))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        filtered.contains(">artifact<span class=\"kinds__n\">2</span>")
+            && filtered.contains(">all<span class=\"kinds__n\">3</span>"),
+        "counts describe the project, so a filter must not change them: {filtered}"
     );
 }
 

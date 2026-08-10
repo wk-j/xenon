@@ -292,6 +292,27 @@ Krypton's own loopback surfaces are unchanged and still follow that file; Xenon 
 resource browser has a categorical axis those surfaces do not have. If the two are ever expected to
 match chip for chip again, this is the section to revisit.
 
+### Stage 5 — Counts on the kind filter (2026-08-10)
+
+The kind row said which kinds *can* exist, never how many of each *do*. Five chips looked identical
+whether a kind held forty resources or none, so the only way to learn a kind was empty was to click
+it and read "nothing of that kind here yet" — a click that answers a question the row was already in
+the right place to answer.
+
+Each chip now prints its count in a `.kinds__n` span, and `all` prints the total. Three decisions
+hold this together:
+
+- **The counts are of the project, not of the current filter.** `project_page` runs a separate
+  `GROUP BY kind` over the whole project, so the row reads the same with `?kind=review` on as with
+  nothing on. A legend whose numbers move when you use it is not a legend.
+- **They are also independent of the `LIMIT 500` on the listing.** The chips report what exists; the
+  grid below shows one page of it.
+- **An empty kind still renders**, dimmed via `is-empty`, saying `0`. The row is a fixed set of five;
+  a chip that appears and disappears costs more to aim at than one that admits it is empty.
+
+The number is dimmed against whatever colour its chip is wearing (`opacity`, not a fixed ink), so it
+survives both the resting hue and the filled `on` state without a second rule per kind.
+
 ### Configuration
 
 None. No new environment variables; assets are compile-time.

@@ -14,12 +14,16 @@
 
 {#- Each filter wears the hue of the kind it selects, so this row doubles as the
     legend for the chips on the cards below. "all" keeps the accent: it is a
-    reset, not a kind. -#}
+    reset, not a kind. Each chip carries its count, so the row says how much of
+    each kind exists before you spend a click finding out. -#}
 <div class="kinds">
-  <a href="/p/{{ project }}" class="{% if kind_filter.is_none() %}on{% endif %}">all</a>
+  {#- No line break between the label and its count: a newline inside the anchor
+      is a rendered space, and the gap is the stylesheet's to set. -#}
+  <a href="/p/{{ project }}"
+     class="{% if kind_filter.is_none() %}on{% endif %}">all<span class="kinds__n">{{ total }}</span></a>
   {%- for k in kinds %}
-  <a href="/p/{{ project }}?kind={{ k }}"
-     class="k--{{ k }}{% if kind_filter.as_deref() == Some(k) %} on{% endif %}">{{ k }}</a>
+  <a href="/p/{{ project }}?kind={{ k.name }}"
+     class="k--{{ k.name }}{% if kind_filter.as_deref() == Some(k.name) %} on{% endif %}{% if k.count == 0 %} is-empty{% endif %}">{{ k.name }}<span class="kinds__n">{{ k.count }}</span></a>
   {%- endfor %}
 </div>
 
