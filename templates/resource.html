@@ -40,6 +40,23 @@
     is escaped or refused upstream — agent bytes never arrive here raw. -#}
 {{ content|safe }}
 
+{#- Every external destination the content mentions, gathered in one place —
+    an issue cited three paragraphs apart is still one row here. Hrefs were
+    unescaped when collected, so askama's escaping here is the one encoding. -#}
+{%- if !references.is_empty() %}
+<section class="refs">
+  <h3 class="refs__title">references</h3>
+  <ul class="refs__list">
+    {%- for r in references %}
+    <li>
+      <span class="pill refs__kind">{{ r.kind }}</span>
+      <a href="{{ r.href }}" target="_blank" rel="noopener noreferrer">{{ r.label }}</a>
+    </li>
+    {%- endfor %}
+  </ul>
+</section>
+{%- endif %}
+
 {%- if revisions > 1 %}
 <nav class="revnav">
   {%- if seq > 1 %}

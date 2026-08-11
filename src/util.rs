@@ -172,9 +172,70 @@ pub fn is_valid_file_path(path: &str) -> bool {
             .any(|seg| seg.is_empty() || seg == "." || seg == "..")
 }
 
+/// Canonical `owner/repo` from whatever a caller pastes: `owner/repo` itself,
+/// a `github.com/...` URL (with or without scheme or a trailing `.git`), or
+/// None if it is not recognizably a GitHub repository. Stored normalized so
+/// the renderer can splice it into an issue URL without re-parsing.
+pub fn normalize_github_repo(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    let s = s
+        .strip_prefix("https://")
+        .or_else(|| s.strip_prefix("http://"))
+        .unwrap_or(s);
+    let s = s.strip_prefix("github.com/").unwrap_or(s);
+    let s = s.trim_matches('/');
+    let s = s.strip_suffix(".git").unwrap_or(s);
+
+    let (owner, repo) = s.split_once('/')?;
+    // A GitHub owner is alphanumerics and hyphens only — no dots — which is
+    // also what rejects a pasted non-GitHub host like `gitlab.com/foo` once the
+    // scheme is gone. Repo names may additionally carry `.` and `_`.
+    let owner_ok = !owner.is_empty()
+        && owner.len() <= 100
+        && owner.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    let repo_ok = !repo.is_empty()
+        && repo.len() <= 100
+        && repo
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        && repo != "."
+        && repo != "..";
+    (owner_ok && repo_ok).then(|| format!("{owner}/{repo}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn github_repo_normalizes_to_owner_slash_repo() {
+        for raw in [
+            "wk-j/xenon",
+            "https://github.com/wk-j/xenon",
+            "http://github.com/wk-j/xenon",
+            "github.com/wk-j/xenon.git",
+            "  https://github.com/wk-j/xenon/  ",
+        ] {
+            assert_eq!(
+                normalize_github_repo(raw).as_deref(),
+                Some("wk-j/xenon"),
+                "{raw}"
+            );
+        }
+        for raw in [
+            "",
+            "xenon",
+            "wk-j/",
+            "/xenon",
+            "wk-j/xenon/issues/3",
+            "https://gitlab.com/wk-j/xenon",
+            "wk j/xenon",
+            "../secret",
+            "a/<script>",
+        ] {
+            assert_eq!(normalize_github_repo(raw), None, "{raw}");
+        }
+    }
 
     #[test]
     fn base32_is_requested_length_and_random() {

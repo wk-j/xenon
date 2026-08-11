@@ -8,7 +8,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 pub fn open(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
@@ -78,6 +78,7 @@ fn migrate(conn: &Connection) -> Result<(), String> {
         apply_v3(conn)?;
         conn.execute_batch(SCHEMA_V4)
             .map_err(|e| format!("apply schema v4: {e}"))?;
+        apply_v5(conn)?;
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
             .map_err(|e| format!("stamp schema version: {e}"))
     })();
@@ -115,6 +116,13 @@ fn apply_v3(conn: &Connection) -> Result<(), String> {
     )?;
     conn.execute_batch(SCHEMA_V3_BACKFILL)
         .map_err(|e| format!("apply schema v3: {e}"))
+}
+
+/// v5 — the project's GitHub repository, as `owner/repo`. NULL means "not
+/// linked". It exists so a rendered resource can turn `#123` into a link to the
+/// issue it names; nothing else hangs off it.
+fn apply_v5(conn: &Connection) -> Result<(), String> {
+    add_column(conn, "project", "github_repo", "TEXT")
 }
 
 /// Add a column unless the table already has one by that name.

@@ -13,7 +13,7 @@
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
 use data_encoding::BASE64;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -43,6 +43,7 @@ pub const MAX_INLINE_BYTES: usize = 1024 * 1024;
 pub fn routes(max_blob_bytes: usize) -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/projects", get(list_projects))
+        .route("/v1/projects/{project}", patch(update_project))
         .route(
             "/v1/projects/{project}/resources",
             post(create_revision).get(list_resources),
@@ -739,7 +740,7 @@ async fn list_projects(
     // Anonymous callers see only public projects; an authenticated caller also
     // sees their own.
     let mut stmt = conn.prepare(
-        "SELECT p.slug, p.is_public, p.created_at,
+        "SELECT p.slug, p.is_public, p.created_at, p.github_repo,
                 (SELECT count(*) FROM resource r WHERE r.project_id = p.id)
          FROM project p
          WHERE p.is_public = 1 OR p.owner_id = ?1
@@ -755,11 +756,82 @@ async fn list_projects(
                 "slug": r.get::<_, String>(0)?,
                 "is_public": r.get::<_, i64>(1)? != 0,
                 "created_at": r.get::<_, i64>(2)?,
-                "resources": r.get::<_, i64>(3)?,
+                "github_repo": r.get::<_, Option<String>>(3)?,
+                "resources": r.get::<_, i64>(4)?,
             }))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Json(rows))
+}
+
+#[derive(Deserialize)]
+pub struct UpdateProjectRequest {
+    /// Set to `"owner/repo"` (or a github.com URL) to link, to `null` or `""`
+    /// to unlink. Absent leaves it alone, so the route can grow more settings
+    /// without every caller resending this one — hence the double Option.
+    #[serde(default, deserialize_with = "double_option")]
+    github_repo: Option<Option<String>>,
+}
+
+/// Distinguishes `{"github_repo": null}` (present, clear it) from `{}` (absent,
+/// leave it) — serde flattens both to `None` without this.
+fn double_option<'de, D>(d: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(d).map(Some)
+}
+
+/// `PATCH /v1/projects/{project}` — project settings. Today that is only the
+/// GitHub repository the project's rendered pages link issue references to.
+async fn update_project(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(project): Path<String>,
+    Json(req): Json<UpdateProjectRequest>,
+) -> AppResult<Json<serde_json::Value>> {
+    let conn = state.db();
+    let actor = auth::require_actor(&conn, &headers)?;
+
+    // Owner-only, and a non-owner is told "not found" rather than "forbidden"
+    // so project names stay unenumerable (same stance as ingest).
+    let project_id: String = conn
+        .query_row(
+            "SELECT id FROM project WHERE slug = ?1 AND owner_id = ?2",
+            params![project, actor.user_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| AppError::not_found(format!("no project {project}")))?;
+    actor.require_scope(auth::SCOPE_PROJECT_ADMIN)?;
+    assert_token_project(&actor, &project_id)?;
+
+    if let Some(value) = req.github_repo {
+        let normalized = match value.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            None => None,
+            Some(raw) => Some(crate::util::normalize_github_repo(raw).ok_or_else(|| {
+                AppError::bad_request(
+                    "invalid_github_repo",
+                    "expected owner/repo or a https://github.com/owner/repo URL",
+                )
+            })?),
+        };
+        conn.execute(
+            "UPDATE project SET github_repo = ?1 WHERE id = ?2",
+            params![normalized, project_id],
+        )?;
+    }
+
+    let (is_public, github_repo): (i64, Option<String>) = conn.query_row(
+        "SELECT is_public, github_repo FROM project WHERE id = ?1",
+        [&project_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    Ok(Json(serde_json::json!({
+        "slug": project,
+        "is_public": is_public != 0,
+        "github_repo": github_repo,
+    })))
 }
 
 #[derive(Deserialize)]

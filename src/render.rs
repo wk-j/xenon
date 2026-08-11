@@ -20,7 +20,7 @@ use crate::web::escape;
 /// block body already HTML-escaped, so it is un-escaped once here and re-escaped
 /// by each per-kind renderer. `&amp;` is undone LAST so `&amp;lt;` recovers as
 /// the literal text `&lt;` rather than collapsing into `<`.
-fn unescape(s: &str) -> String {
+pub(crate) fn unescape(s: &str) -> String {
     s.replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")

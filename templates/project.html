@@ -1,7 +1,16 @@
 {% extends "base.html" %}
 
 {% block content %}
-<h2 class="meta">{{ project }}</h2>
+<div class="project-head">
+  <span class="logo logo--lg" style="--h:{{ hue }}" aria-hidden="true">{{ initial }}</span>
+  <h2 class="meta">{{ project }}</h2>
+  {%- if let Some(repo) = github_repo %}
+  {#- The stored value is normalized owner/repo, so it is safe in the href;
+      askama escapes the label. -#}
+  <a class="project-head__gh" href="https://github.com/{{ repo }}"
+     target="_blank" rel="noopener noreferrer">{{ repo }} ↗</a>
+  {%- endif %}
+</div>
 
 {#- The project's two pages. Usage (spec 214) is a second body of data under the
     same project, not a sixth resource kind, so it is a page switch ABOVE the

@@ -142,6 +142,11 @@ struct ProjectTemplate {
     crumbs: Vec<Crumb>,
     nav: Nav,
     project: String,
+    /// The monogram "logo" beside the project name.
+    initial: String,
+    hue: u16,
+    /// `owner/repo` when the project is linked to GitHub.
+    github_repo: Option<String>,
     kinds: Vec<KindTab>,
     /// Sum over `kinds`, for the "all" chip.
     total: i64,
@@ -185,6 +190,9 @@ struct ResourceTemplate {
     pinned: bool,
     files: Vec<FileTab>,
     content: String,
+    /// External destinations mentioned in `content`, for the references
+    /// section. Empty renders no section.
+    references: Vec<RefItem>,
 }
 
 struct FileTab {
@@ -209,6 +217,31 @@ struct ProjectCard {
     slug: String,
     is_public: bool,
     resource_count: i64,
+    /// The monogram "logo": see `logo_initial` / `logo_hue`.
+    initial: String,
+    hue: u16,
+}
+
+/// The letter a project wears as its logo: the first alphanumeric character of
+/// the slug, uppercased. `#` for a slug with none, so the tile never renders
+/// blank.
+fn logo_initial(name: &str) -> String {
+    name.chars()
+        .find(|c| c.is_alphanumeric())
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_else(|| "#".to_string())
+}
+
+/// The logo's hue, hashed (FNV-1a) from the whole slug — not just the initial,
+/// so `krypton` and `kappa` don't wear the same colour. Derived rather than
+/// stored: the same name gets the same face on every page and every restart.
+fn logo_hue(name: &str) -> u16 {
+    let mut h: u32 = 0x811c_9dc5;
+    for b in name.as_bytes() {
+        h ^= u32::from(*b);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    (h % 360) as u16
 }
 
 // ─── LLM usage (Krypton spec 214) ───────────────────────────────────────────
@@ -222,6 +255,9 @@ struct UsageTemplate {
     crumbs: Vec<Crumb>,
     nav: Nav,
     project: String,
+    /// The monogram "logo" beside the project name.
+    initial: String,
+    hue: u16,
     days: i64,
     ranges: &'static [RangeChoice],
     /// The only number the template branches on. Everything else it prints is
@@ -513,6 +549,8 @@ async fn usage_page(
             },
         ],
         nav,
+        initial: logo_initial(&project),
+        hue: logo_hue(&project),
         project,
         days,
         turns: totals.turns,
@@ -669,9 +707,16 @@ fn display_name(conn: &Connection, user_id: &str) -> String {
 async fn index(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AppResult<Html<String>> {
     let (actor, nav) = viewer(&state, &headers);
     let conn = state.db();
+    // Most recently touched project first. A project has no updated_at of its
+    // own, so the latest resource update stands in for it; a project with no
+    // resources yet falls back to its creation time rather than sinking to the
+    // bottom of the list.
     let mut stmt = conn.prepare(
         "SELECT p.slug, p.is_public, (SELECT count(*) FROM resource r WHERE r.project_id = p.id)
-         FROM project p WHERE p.is_public = 1 OR p.owner_id = ?1 ORDER BY p.slug",
+         FROM project p WHERE p.is_public = 1 OR p.owner_id = ?1
+         ORDER BY coalesce(
+             (SELECT max(r.updated_at) FROM resource r WHERE r.project_id = p.id),
+             p.created_at) DESC, p.slug",
     )?;
     let owner = actor
         .as_ref()
@@ -697,6 +742,8 @@ async fn index(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AppRes
         projects: rows
             .into_iter()
             .map(|(slug, is_public, resource_count)| ProjectCard {
+                initial: logo_initial(&slug),
+                hue: logo_hue(&slug),
                 slug,
                 is_public,
                 resource_count,
@@ -867,6 +914,7 @@ async fn project_page(
     let (actor, nav) = viewer(&state, &headers);
     let conn = state.db();
     let project_id = readable_project(&conn, actor.as_ref(), &project)?;
+    let github_repo = project_github_repo(&conn, &project_id)?;
 
     let kind_filter = query.kind.as_deref().filter(|k| RESOURCE_KINDS.contains(k));
 
@@ -930,6 +978,9 @@ async fn project_page(
             },
         ],
         nav,
+        initial: logo_initial(&project),
+        hue: logo_hue(&project),
+        github_repo,
         project: project.clone(),
         kinds,
         total,
@@ -973,6 +1024,7 @@ async fn resource_page(
     let (actor, nav) = viewer(&state, &headers);
     let conn = state.db();
     let project_id = readable_project(&conn, actor.as_ref(), &project)?;
+    let github_repo = project_github_repo(&conn, &project_id)?;
 
     let resource_id: String = conn
         .query_row(
@@ -1018,6 +1070,7 @@ async fn resource_page(
             pinned: false,
             files: Vec::new(),
             content: "<p class=\"empty\">no committed revision</p>".to_string(),
+            references: Vec::new(),
         });
     };
 
@@ -1034,7 +1087,13 @@ async fn resource_page(
     // withholding the entire payload from the reader. Files still win when
     // there are any; meta is what fills the page when there are none.
     let content = match selected {
-        Some(file) => render_file(&state, &revision.id, &file.path, &file.content_type)?,
+        Some(file) => render_file(
+            &state,
+            &revision.id,
+            &file.path,
+            &file.content_type,
+            github_repo.as_deref(),
+        )?,
         None => {
             crate::meta::render_meta(&detail.summary.kind, &revision.meta, &detail.summary.title)
                 .unwrap_or_else(|| "<p class=\"empty\">this revision has no files</p>".to_string())
@@ -1051,6 +1110,8 @@ async fn resource_page(
         })
         .collect();
 
+    let references = collect_references(&content);
+
     render(&ResourceTemplate {
         title,
         css_url,
@@ -1066,6 +1127,7 @@ async fn resource_page(
         pinned: seq.is_some(),
         files,
         content,
+        references,
     })
 }
 
@@ -1109,11 +1171,22 @@ fn byline_for(revision: &crate::api::RevisionDetail) -> Option<Byline> {
     })
 }
 
+/// The project's linked GitHub repository, if any. Small enough to ask for
+/// wherever a page is about to render markdown.
+fn project_github_repo(conn: &Connection, project_id: &str) -> AppResult<Option<String>> {
+    Ok(conn.query_row(
+        "SELECT github_repo FROM project WHERE id = ?1",
+        [project_id],
+        |r| r.get(0),
+    )?)
+}
+
 fn render_file(
     state: &AppState,
     revision_id: &str,
     path: &str,
     content_type: &str,
+    github_repo: Option<&str>,
 ) -> AppResult<String> {
     let src = format!("/v1/revisions/{}/files/{}", revision_id, urlencode(path));
 
@@ -1146,10 +1219,13 @@ fn render_file(
         // that comrak renders as anonymous grey code blocks. The post-pass turns
         // the ones we know into semantic markup and leaves the rest alone, so a
         // Board read here shows what it shows inside Krypton.
-        return Ok(format!(
-            "<article class=\"doc\">{}</article>",
-            crate::render::render_review_blocks(&markdown_to_html(&text))
-        ));
+        let mut html = crate::render::render_review_blocks(&markdown_to_html(&text));
+        // After the review pass, so an issue mentioned inside a finding's own
+        // prose gets its link too.
+        if let Some(repo) = github_repo {
+            html = link_issue_refs(&html, repo);
+        }
+        return Ok(format!("<article class=\"doc\">{html}</article>"));
     }
     // Anything else that is text — JSON evidence, a log, a config, a source
     // file — is laid out in place. It used to fall straight through to the
@@ -1361,6 +1437,191 @@ pub fn markdown_to_html(source: &str) -> String {
     comrak::markdown_to_html(source, &options)
 }
 
+/// Turns `#123` in rendered markdown into a link to that issue in the
+/// project's GitHub repository. String-level over comrak output — the same
+/// stance as `render::render_review_blocks` — walking tags so that text inside
+/// `<pre>`, `<code>` and existing `<a>` elements is never rewritten: a `#7` in
+/// a diff hunk or a code sample is code, not a reference.
+///
+/// `repo` is the stored, normalized `owner/repo` (see
+/// `util::normalize_github_repo`), so it splices into the href unescaped.
+pub fn link_issue_refs(html: &str, repo: &str) -> String {
+    // <a> needs the boundary check so it does not swallow <article>.
+    const OPAQUE: [(&str, &str); 3] = [("pre", "</pre>"), ("code", "</code>"), ("a", "</a>")];
+
+    let mut out = String::with_capacity(html.len() + 64);
+    let mut rest = html;
+    while let Some(at) = rest.find('<') {
+        link_issue_text(&mut out, &rest[..at], repo);
+        rest = &rest[at..];
+
+        let opaque_close = OPAQUE.iter().find_map(|(name, close)| {
+            let boundary = rest.as_bytes().get(1 + name.len());
+            (rest[1..].starts_with(name) && matches!(boundary, Some(b' ' | b'>'))).then_some(*close)
+        });
+        let copied = match opaque_close {
+            // The whole element, verbatim. An unclosed one is comrak output we
+            // do not recognize; leave everything from here untouched.
+            Some(close) => rest.find(close).map(|i| i + close.len()),
+            // Any other tag: copy just the tag, text scanning resumes after it.
+            None => rest.find('>').map(|i| i + 1),
+        };
+        match copied {
+            Some(end) => {
+                out.push_str(&rest[..end]);
+                rest = &rest[end..];
+            }
+            None => {
+                out.push_str(rest);
+                return out;
+            }
+        }
+    }
+    link_issue_text(&mut out, rest, repo);
+    out
+}
+
+/// One row of a resource page's references section: an external destination
+/// the rendered content points at.
+struct RefItem {
+    href: String,
+    label: String,
+    /// The pill text: "issue" for a GitHub issue or pull request, "link"
+    /// otherwise.
+    kind: &'static str,
+}
+
+/// Gathers the external destinations out of rendered content, in document
+/// order, one row per URL however often it is mentioned. Internal hrefs (file
+/// tabs, revisions, other resources) are navigation, not references, so only
+/// `http(s)://` destinations qualify. Runs over the same server-rendered HTML
+/// the page shows, so it can never disagree with the content about where a
+/// link goes.
+fn collect_references(html: &str) -> Vec<RefItem> {
+    let mut refs: Vec<RefItem> = Vec::new();
+    let mut rest = html;
+    while let Some(at) = rest.find("<a ") {
+        rest = &rest[at..];
+        let Some(tag_end) = rest.find('>') else { break };
+        let tag = &rest[..tag_end];
+
+        let href = tag
+            .find("href=\"")
+            .map(|h| &tag[h + 6..])
+            .and_then(|v| v.split('"').next())
+            .map(crate::render::unescape)
+            .unwrap_or_default();
+
+        let Some(close) = rest.find("</a>") else {
+            break;
+        };
+        let text = strip_tags(&rest[tag_end + 1..close]);
+        rest = &rest[close + 4..];
+
+        if !href.starts_with("https://") && !href.starts_with("http://") {
+            continue;
+        }
+        if refs.iter().any(|r| r.href == href) {
+            continue;
+        }
+
+        let (kind, label) = match github_issue_label(&href) {
+            Some(label) => ("issue", label),
+            // The link's own text names the destination best; a bare autolink
+            // repeats its URL, which reads better without the scheme.
+            None => {
+                let text = text.trim();
+                let label = if text.is_empty() || text == href {
+                    href.trim_start_matches("https://")
+                        .trim_start_matches("http://")
+                        .to_string()
+                } else {
+                    text.to_string()
+                };
+                ("link", truncate_label(&label))
+            }
+        };
+        refs.push(RefItem { href, label, kind });
+    }
+    refs
+}
+
+/// `owner/repo#123` for a GitHub issue or pull-request URL, or None for
+/// anything else. A query string or fragment (a comment permalink) still
+/// counts; a deeper path segment (`/pull/5/files`) does not — that page is
+/// about the files, and the plain-link label keeps that visible.
+fn github_issue_label(href: &str) -> Option<String> {
+    let path = href.strip_prefix("https://github.com/")?;
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    let mut parts = path.trim_end_matches('/').split('/');
+    let (owner, repo, kind, number) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    let simple = parts.next().is_none()
+        && matches!(kind, "issues" | "pull")
+        && !number.is_empty()
+        && number.chars().all(|c| c.is_ascii_digit());
+    simple.then(|| format!("{owner}/{repo}#{number}"))
+}
+
+/// Anchor text may carry inline markup (`<code>`, entities); the reference row
+/// wants the words alone.
+fn strip_tags(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(at) = rest.find('<') {
+        out.push_str(&rest[..at]);
+        match rest[at..].find('>') {
+            Some(end) => rest = &rest[at + end + 1..],
+            None => return crate::render::unescape(&out),
+        }
+    }
+    out.push_str(rest);
+    crate::render::unescape(&out)
+}
+
+/// A reference row is an index entry, not a place to lay out a paragraph-long
+/// link text.
+fn truncate_label(label: &str) -> String {
+    const MAX: usize = 90;
+    if label.chars().count() <= MAX {
+        return label.to_string();
+    }
+    let cut: String = label.chars().take(MAX - 1).collect();
+    format!("{cut}…")
+}
+
+/// The text-node half of `link_issue_refs`. A reference is `#` plus 1..=10
+/// digits on its own word boundary; the `&`/`#` look-behind keeps numeric
+/// character entities (`&#39;`) and `##` intact.
+fn link_issue_text(out: &mut String, text: &str, repo: &str) {
+    let b = text.as_bytes();
+    let (mut i, mut copied) = (0, 0);
+    while i < b.len() {
+        if b[i] == b'#' {
+            let prev_ok = i == 0 || {
+                let p = b[i - 1];
+                !p.is_ascii_alphanumeric() && p != b'&' && p != b'#'
+            };
+            let mut j = i + 1;
+            while j < b.len() && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            let next_ok = j >= b.len() || !b[j].is_ascii_alphanumeric();
+            if prev_ok && next_ok && (2..=11).contains(&(j - i)) {
+                let n = &text[i + 1..j];
+                out.push_str(&text[copied..i]);
+                out.push_str(&format!(
+                    "<a href=\"https://github.com/{repo}/issues/{n}\">#{n}</a>"
+                ));
+                copied = j;
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out.push_str(&text[copied..]);
+}
+
 fn urlencode(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for byte in raw.bytes() {
@@ -1487,6 +1748,104 @@ mod tests {
             !rendered.contains("<script>"),
             "raw html must not survive rendering: {rendered}"
         );
+    }
+
+    #[test]
+    fn issue_refs_link_into_the_projects_github_repo() {
+        let html = link_issue_refs("<p>fixes #12 and #345.</p>", "wk-j/xenon");
+        assert_eq!(
+            html,
+            "<p>fixes <a href=\"https://github.com/wk-j/xenon/issues/12\">#12</a> \
+             and <a href=\"https://github.com/wk-j/xenon/issues/345\">#345</a>.</p>"
+        );
+    }
+
+    #[test]
+    fn issue_refs_inside_code_pre_and_links_stay_text() {
+        // Real comrak shapes: inline code, a fenced block, an existing link.
+        for html in [
+            "<p><code>#12</code></p>",
+            "<pre><code>fixes #12\n</code></pre>",
+            "<p><a href=\"https://x.test/#12\">see #12</a></p>",
+        ] {
+            assert_eq!(link_issue_refs(html, "o/r"), html, "{html}");
+        }
+        // <a> matching must not swallow <article>.
+        let article = "<article class=\"doc\"><p>#7</p></article>";
+        assert!(
+            link_issue_refs(article, "o/r").contains("issues/7"),
+            "text inside <article> is still linkable"
+        );
+    }
+
+    #[test]
+    fn issue_ref_needs_a_word_boundary() {
+        for html in [
+            "<p>&#39;quoted&#39;</p>", // numeric character entity
+            "<p>a#1</p>",              // glued to a word
+            "<p>#12abc</p>",           // digits running into letters
+            "<p>## heading marker</p>",
+            "<p>#</p>",
+        ] {
+            let out = link_issue_refs(html, "o/r");
+            assert_eq!(out, html, "{html}");
+        }
+        assert!(link_issue_refs("<p>(#12)</p>", "o/r").contains("issues/12"));
+    }
+
+    #[test]
+    fn references_collect_external_links_once_each_and_skip_internal_ones() {
+        let html = concat!(
+            "<p><a href=\"?file=other.md\">tab</a>",
+            " <a href=\"/r/p/doc/x\">sibling</a>",
+            " <a href=\"https://example.com/docs\">the <code>docs</code></a>",
+            " <a href=\"https://example.com/docs\">https://example.com/docs</a>",
+            " <a href=\"https://github.com/wk-j/xenon/issues/12\">#12</a>",
+            " <a href=\"https://github.com/wk-j/xenon/pull/5/files\">diff</a></p>",
+        );
+        let refs = collect_references(html);
+        let rows: Vec<(&str, &str, &str)> = refs
+            .iter()
+            .map(|r| (r.kind, r.label.as_str(), r.href.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                // First mention wins the label; nested markup is stripped.
+                ("link", "the docs", "https://example.com/docs"),
+                (
+                    "issue",
+                    "wk-j/xenon#12",
+                    "https://github.com/wk-j/xenon/issues/12"
+                ),
+                // A deeper PR path is about its files, so it stays a plain link.
+                ("link", "diff", "https://github.com/wk-j/xenon/pull/5/files"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_bare_autolink_is_labelled_by_its_url_without_the_scheme() {
+        let rendered = markdown_to_html("see https://example.com/a?b=1&c=2\n");
+        let refs = collect_references(&rendered);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].label, "example.com/a?b=1&c=2");
+        // comrak escaped the href; collection undoes that exactly once.
+        assert_eq!(refs[0].href, "https://example.com/a?b=1&c=2");
+    }
+
+    #[test]
+    fn a_pr_comment_permalink_still_labels_as_its_pull_request() {
+        assert_eq!(
+            github_issue_label("https://github.com/o/r/pull/7#issuecomment-1"),
+            Some("o/r#7".to_string())
+        );
+        assert_eq!(
+            github_issue_label("https://github.com/o/r/issues/7?q=x"),
+            Some("o/r#7".to_string())
+        );
+        assert_eq!(github_issue_label("https://github.com/o/r"), None);
+        assert_eq!(github_issue_label("https://github.com/o/r/issues/x7"), None);
     }
 
     #[test]

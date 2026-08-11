@@ -12,12 +12,16 @@
 {% else %}
 <div class="grid">
   {% for p in projects %}
-  <div class="card">
-    <h3><a href="/p/{{ p.slug }}">{{ p.slug }}</a></h3>
-    <div class="meta">
-      {{ p.resource_count }} resource{{ p.resource_count|pluralize }} ·
-      {% if p.is_public %}<span class="state state--public">public</span>
-      {%- else %}<span class="state state--private">private</span>{% endif %}
+  <div class="card card--project">
+    {#- The logo is the name again, so it says nothing a screen reader needs. -#}
+    <span class="logo" style="--h:{{ p.hue }}" aria-hidden="true">{{ p.initial }}</span>
+    <div class="card__body">
+      <h3><a href="/p/{{ p.slug }}">{{ p.slug }}</a></h3>
+      <div class="meta">
+        {{ p.resource_count }} resource{{ p.resource_count|pluralize }} ·
+        {% if p.is_public %}<span class="state state--public">public</span>
+        {%- else %}<span class="state state--private">private</span>{% endif %}
+      </div>
     </div>
   </div>
   {% endfor %}

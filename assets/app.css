@@ -61,6 +61,37 @@ box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--k) 28%,transparent)}
 /* Public is a fact about who can read this, so it gets the success tone;
    private is the quiet default and stays neutral. The word carries it either
    way — the colour is the second signal, never the only one. */
+/* The project logo: the name's first letter on a hue hashed from the whole
+   slug, so a project keeps the same face on its card, its page, and its usage
+   page without anyone drawing or storing anything. Identity, not status — the
+   lightness/chroma sit where the kind hues do (L≈.8, tinted ground like
+   .pill.k), so a logo that happens to land near green or red reads as a
+   colour, not a verdict. --l exists so the letter, tint, and ring stay one
+   colour that moves together when --h does. */
+.logo{--l:oklch(.8 .12 var(--h));display:inline-flex;flex:none;align-items:center;
+justify-content:center;width:34px;height:34px;border-radius:9px;
+font:600 15px/1 var(--mono);color:var(--l);
+background:color-mix(in oklab,var(--l) 14%,var(--code-bg));
+box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--l) 30%,transparent)}
+.logo--lg{width:42px;height:42px;border-radius:11px;font-size:19px}
+.card--project{display:flex;gap:11px;align-items:center}
+.card__body{min-width:0}
+.project-head{display:flex;gap:11px;align-items:center;margin-bottom:6px}
+.project-head h2{margin:0}
+/* The GitHub link is a fact about the project, not an action on this page, so
+   it sits quiet in the muted tone until pointed at. */
+.project-head__gh{font:11px/1.6 var(--mono);letter-spacing:.04em;color:var(--muted)}
+.project-head__gh:hover{color:var(--accent);text-decoration:none}
+/* The references section is an index of where the content points, so it reads
+   like the meta rows do — mono, quiet — and stays out of the document's way
+   behind a border. */
+.refs{border-top:1px solid var(--border);margin-top:24px;padding-top:12px}
+.refs__title{margin:0 0 8px;font:600 11px/1.6 var(--mono);letter-spacing:.04em;
+color:var(--muted);text-transform:lowercase}
+.refs__list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:5px}
+.refs__list li{display:flex;align-items:baseline;gap:8px;min-width:0}
+.refs__list a{font:12px/1.5 var(--mono);overflow-wrap:anywhere}
+.refs__kind{flex:none}
 .state{font:10px/1.6 var(--mono);letter-spacing:.04em}
 .state--public{color:var(--add)}
 .state--private{color:var(--muted)}

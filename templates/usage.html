@@ -15,7 +15,10 @@
     figure cannot be rounded one way in a total and another in a row. -#}
 
 {% block content %}
-<h2 class="meta">{{ project }}</h2>
+<div class="project-head">
+  <span class="logo logo--lg" style="--h:{{ hue }}" aria-hidden="true">{{ initial }}</span>
+  <h2 class="meta">{{ project }}</h2>
+</div>
 
 {#- The project's two pages, each reachable from the other. Usage used to be
     linkable only from a URL someone had already been told about. -#}

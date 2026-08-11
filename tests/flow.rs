@@ -81,6 +81,13 @@ impl Server {
         self.send(req.body(Body::empty()).unwrap()).await
     }
 
+    async fn patch(&self, path: &str, auth: Option<&str>, body: Value) -> Res {
+        let mut req = Request::patch(path).header(header::CONTENT_TYPE, "application/json");
+        req = apply_auth(req, auth);
+        self.send(req.body(Body::from(body.to_string())).unwrap())
+            .await
+    }
+
     /// A browse-UI page as raw HTML. `send` parses JSON, which an HTML response
     /// is not, so the body has to be read separately here.
     async fn get_html(&self, path: &str, session: Option<&str>) -> (StatusCode, String) {
@@ -1358,6 +1365,248 @@ async fn the_project_list_renders_from_a_template_and_escapes_slugs() {
     assert!(html.contains("1 resource ·"), "singular, not '1 resources'");
     assert!(html.contains("private"));
     assert!(!html.contains("no projects yet"));
+
+    // The card wears a monogram logo derived from the slug: first letter,
+    // uppercased, on a hue hashed from the whole name.
+    assert!(
+        html.contains("class=\"logo\"") && html.contains(">W</span>"),
+        "no monogram on the card: {html}"
+    );
+    let (_, page) = server.get_html("/p/wk-j.krypton", Some(&session)).await;
+    assert!(
+        page.contains("logo--lg") && page.contains(">W</span>"),
+        "the project page header lost its monogram: {page}"
+    );
+}
+
+/// Linking a project to its GitHub repository (`PATCH /v1/projects/{slug}`)
+/// makes rendered markdown turn `#123` into a link to that issue. Prose only:
+/// code spans, fences and pre-existing links keep their text.
+#[tokio::test]
+async fn a_linked_project_renders_issue_refs_as_github_links() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(&session, json!(["resource:write", "resource:read"]))
+        .await;
+    let admin = session_header(&session);
+
+    let md = "fixes #12, see `#13`\n\n```\nnot #14\n```\n";
+    let res = server
+        .post(
+            "/v1/projects/krypton/resources:inline",
+            Some(&token),
+            json!({
+                "kind": "doc",
+                "slug": "docs/notes.md",
+                "title": "notes",
+                "contents": [{
+                    "path": "notes.md",
+                    "content_base64": data_encoding::BASE64.encode(md.as_bytes()),
+                    "content_type": "text/markdown",
+                }],
+            }),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::CREATED, "{:?}", res.body);
+
+    // Unlinked, the reference is plain text.
+    let (_, page) = server
+        .get_html("/r/krypton/doc/docs/notes.md", Some(&session))
+        .await;
+    assert!(!page.contains("issues/12"), "{page}");
+
+    // A write token lacks project:admin, so it may not change settings.
+    let denied = server
+        .patch(
+            "/v1/projects/krypton",
+            Some(&token),
+            json!({ "github_repo": "wk-j/xenon" }),
+        )
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN, "{:?}", denied.body);
+
+    // The session may, and the URL form is stored normalized.
+    let ok = server
+        .patch(
+            "/v1/projects/krypton",
+            Some(&admin),
+            json!({ "github_repo": "https://github.com/wk-j/xenon" }),
+        )
+        .await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.body);
+    assert_eq!(ok.body["github_repo"], "wk-j/xenon");
+
+    let bad = server
+        .patch(
+            "/v1/projects/krypton",
+            Some(&admin),
+            json!({ "github_repo": "not a repo" }),
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{:?}", bad.body);
+
+    // Linked: prose gets the link; code, fence and the header link stand.
+    let (_, page) = server
+        .get_html("/r/krypton/doc/docs/notes.md", Some(&session))
+        .await;
+    assert!(
+        page.contains("<a href=\"https://github.com/wk-j/xenon/issues/12\">#12</a>"),
+        "{page}"
+    );
+    assert!(!page.contains("issues/13"), "code span stays text: {page}");
+    assert!(!page.contains("issues/14"), "fence stays text: {page}");
+
+    let (_, project) = server.get_html("/p/krypton", Some(&session)).await;
+    assert!(
+        project.contains("href=\"https://github.com/wk-j/xenon\""),
+        "project header should carry the repo link: {project}"
+    );
+
+    // `{}` leaves the link alone; an explicit null clears it.
+    let noop = server
+        .patch("/v1/projects/krypton", Some(&admin), json!({}))
+        .await;
+    assert_eq!(noop.body["github_repo"], "wk-j/xenon", "{:?}", noop.body);
+    let cleared = server
+        .patch(
+            "/v1/projects/krypton",
+            Some(&admin),
+            json!({ "github_repo": null }),
+        )
+        .await;
+    assert!(cleared.body["github_repo"].is_null(), "{:?}", cleared.body);
+}
+
+/// Every external destination a resource's content mentions — links out, and
+/// GitHub issues via `#N` — is gathered into one references section at the
+/// foot of the page, one row per URL however often it is cited.
+#[tokio::test]
+async fn external_links_collect_into_a_references_section() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(&session, json!(["resource:write", "resource:read"]))
+        .await;
+    let md = "see [the docs](https://example.com/docs), #7,\n\
+              https://example.com/docs again, and [a tab](?file=other.md)\n";
+    let res = server
+        .post(
+            "/v1/projects/krypton/resources:inline",
+            Some(&token),
+            json!({
+                "kind": "doc",
+                "slug": "docs/refs.md",
+                "title": "refs",
+                "contents": [{
+                    "path": "refs.md",
+                    "content_base64": data_encoding::BASE64.encode(md.as_bytes()),
+                    "content_type": "text/markdown",
+                }],
+            }),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::CREATED, "{:?}", res.body);
+
+    // The project exists only after that first push, so it is linkable now.
+    let linked = server
+        .patch(
+            "/v1/projects/krypton",
+            Some(&session_header(&session)),
+            json!({ "github_repo": "wk-j/xenon" }),
+        )
+        .await;
+    assert_eq!(linked.status, StatusCode::OK, "{:?}", linked.body);
+
+    let (_, page) = server
+        .get_html("/r/krypton/doc/docs/refs.md", Some(&session))
+        .await;
+    let refs = page
+        .split("<section class=\"refs\">")
+        .nth(1)
+        .and_then(|s| s.split("</section>").next())
+        .expect("a references section");
+
+    assert_eq!(
+        refs.matches("https://example.com/docs").count(),
+        1,
+        "cited twice, listed once: {refs}"
+    );
+    assert!(refs.contains(">the docs</a>"), "{refs}");
+    assert!(refs.contains(">wk-j/xenon#7</a>"), "the issue row: {refs}");
+    assert!(
+        !refs.contains("?file="),
+        "internal links are not references: {refs}"
+    );
+
+    // A page whose content points nowhere external has no section at all.
+    let bare = server
+        .post(
+            "/v1/projects/krypton/resources:inline",
+            Some(&token),
+            json!({
+                "kind": "doc",
+                "slug": "docs/plain.md",
+                "title": "plain",
+                "contents": [{
+                    "path": "plain.md",
+                    "content_base64": data_encoding::BASE64.encode(b"just words\n"),
+                    "content_type": "text/markdown",
+                }],
+            }),
+        )
+        .await;
+    assert_eq!(bare.status, StatusCode::CREATED, "{:?}", bare.body);
+    let (_, plain) = server
+        .get_html("/r/krypton/doc/docs/plain.md", Some(&session))
+        .await;
+    assert!(!plain.contains("class=\"refs\""), "{plain}");
+}
+
+/// The project list leads with the most recently touched project, not the
+/// alphabetically first one. The slugs here are chosen so the two orders
+/// disagree: a regression back to slug order puts `aardvark` on top.
+#[tokio::test]
+async fn the_project_list_orders_the_most_recently_updated_first() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(&session, json!(["resource:write", "resource:read"]))
+        .await;
+
+    for project in ["aardvark", "zebra"] {
+        server
+            .post(
+                &format!("/v1/projects/{project}/resources:inline"),
+                Some(&token),
+                json!({
+                    "kind": "doc",
+                    "slug": "docs/a.md",
+                    "title": "a",
+                    "contents": [],
+                }),
+            )
+            .await;
+    }
+
+    // Timestamps are unix seconds, so the two writes above almost certainly
+    // tie. Backdate aardvark's activity by an hour to make the order real.
+    let conn = db::open(&server._dir.path().join("xenon.db")).unwrap();
+    conn.execute(
+        "UPDATE resource SET updated_at = updated_at - 3600
+         WHERE project_id = (SELECT id FROM project WHERE slug = 'aardvark')",
+        [],
+    )
+    .unwrap();
+
+    let (status, html) = server.get_html("/projects", Some(&session)).await;
+    assert_eq!(status, StatusCode::OK);
+    let zebra = html.find("href=\"/p/zebra\"").expect("zebra listed");
+    let aardvark = html.find("href=\"/p/aardvark\"").expect("aardvark listed");
+    assert!(
+        zebra < aardvark,
+        "the most recently updated project should lead: {html}"
+    );
 }
 
 /// The nav tells the reader who they are. It was static markup — every page
