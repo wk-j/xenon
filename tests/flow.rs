@@ -1478,6 +1478,88 @@ async fn a_linked_project_renders_issue_refs_as_github_links() {
     assert!(cleared.body["github_repo"].is_null(), "{:?}", cleared.body);
 }
 
+/// An analysis bundle's slug (`owner/repo/N`) names the repo its issue lives
+/// in, and `#M` on that page resolves there — not to the project's linked
+/// repo, which may belong to a different codebase entirely. Meta-only pages
+/// (an attention flag) get the same detection as documents.
+#[tokio::test]
+async fn an_analysis_page_resolves_refs_against_the_repo_in_its_slug() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(&session, json!(["resource:write", "resource:read"]))
+        .await;
+
+    let md = "duplicate of #447\n";
+    let res = server
+        .post(
+            "/v1/projects/krypton/resources:inline",
+            Some(&token),
+            json!({
+                "kind": "analysis",
+                "slug": "acme/custom-ui/448",
+                "title": "issue 448",
+                "contents": [{
+                    "path": "fix-plan.md",
+                    "content_base64": data_encoding::BASE64.encode(md.as_bytes()),
+                    "content_type": "text/markdown",
+                }],
+            }),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::CREATED, "{:?}", res.body);
+
+    // Even with NO project link, the slug alone carries the repo.
+    let (_, page) = server
+        .get_html("/r/krypton/analysis/acme/custom-ui/448", Some(&session))
+        .await;
+    assert!(
+        page.contains("https://github.com/acme/custom-ui/issues/447"),
+        "{page}"
+    );
+
+    // A project link does not override the more specific slug repo.
+    server
+        .patch(
+            "/v1/projects/krypton",
+            Some(&session_header(&session)),
+            json!({ "github_repo": "wk-j/backend" }),
+        )
+        .await;
+    let (_, page) = server
+        .get_html("/r/krypton/analysis/acme/custom-ui/448", Some(&session))
+        .await;
+    assert!(
+        page.contains("acme/custom-ui/issues/447") && !page.contains("wk-j/backend/issues"),
+        "{page}"
+    );
+
+    // An attention flag has no files; its meta prose gets the same detection,
+    // and the reference lands in the references section.
+    let flag = server
+        .post(
+            "/v1/projects/krypton/resources:inline",
+            Some(&token),
+            json!({
+                "kind": "attention",
+                "slug": "jdg-1",
+                "title": "which retry policy?",
+                "meta": { "rationale": "matches what #21 settled", "reversibility": "reversible" },
+                "contents": [],
+            }),
+        )
+        .await;
+    assert_eq!(flag.status, StatusCode::CREATED, "{:?}", flag.body);
+    let (_, page) = server
+        .get_html("/r/krypton/attention/jdg-1", Some(&session))
+        .await;
+    assert!(
+        page.contains("https://github.com/wk-j/backend/issues/21"),
+        "{page}"
+    );
+    assert!(page.contains("class=\"refs\""), "{page}");
+}
+
 /// Every external destination a resource's content mentions — links out, and
 /// GitHub issues via `#N` — is gathered into one references section at the
 /// foot of the page, one row per URL however often it is cited.

@@ -1024,7 +1024,8 @@ async fn resource_page(
     let (actor, nav) = viewer(&state, &headers);
     let conn = state.db();
     let project_id = readable_project(&conn, actor.as_ref(), &project)?;
-    let github_repo = project_github_repo(&conn, &project_id)?;
+    let github_repo =
+        repo_from_analysis_slug(&kind, &slug).or(project_github_repo(&conn, &project_id)?);
 
     let resource_id: String = conn
         .query_row(
@@ -1095,8 +1096,20 @@ async fn resource_page(
             github_repo.as_deref(),
         )?,
         None => {
-            crate::meta::render_meta(&detail.summary.kind, &revision.meta, &detail.summary.title)
-                .unwrap_or_else(|| "<p class=\"empty\">this revision has no files</p>".to_string())
+            match crate::meta::render_meta(
+                &detail.summary.kind,
+                &revision.meta,
+                &detail.summary.title,
+            ) {
+                // Meta text cites issues the way a document does — an attention
+                // flag's rationale saying "see #12" — so it gets the same pass,
+                // and with it a place in the references section below.
+                Some(html) => match github_repo.as_deref() {
+                    Some(repo) => link_issue_refs(&html, repo),
+                    None => html,
+                },
+                None => "<p class=\"empty\">this revision has no files</p>".to_string(),
+            }
         }
     };
 
@@ -1179,6 +1192,24 @@ fn project_github_repo(conn: &Connection, project_id: &str) -> AppResult<Option<
         [project_id],
         |r| r.get(0),
     )?)
+}
+
+/// The repository an analysis bundle names in its own slug. Krypton publishes
+/// the analysis of issue N in owner/repo under the slug `owner/repo/N`, so
+/// that page resolves `#M` against the repo the conversation is actually
+/// about — which the project's linked repo may not be: a backend project
+/// legitimately holds analyses of UI-repo issues. More specific wins; every
+/// other page falls back to the project setting.
+fn repo_from_analysis_slug(kind: &str, slug: &str) -> Option<String> {
+    if kind != "analysis" {
+        return None;
+    }
+    let (repo, n) = slug.rsplit_once('/')?;
+    if n.is_empty() || !n.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    // Also rejects a deeper slug: its head is not a plain owner/repo.
+    crate::util::normalize_github_repo(repo)
 }
 
 fn render_file(
@@ -1832,6 +1863,20 @@ mod tests {
         assert_eq!(refs[0].label, "example.com/a?b=1&c=2");
         // comrak escaped the href; collection undoes that exactly once.
         assert_eq!(refs[0].href, "https://example.com/a?b=1&c=2");
+    }
+
+    #[test]
+    fn an_analysis_slug_names_the_repo_its_refs_resolve_against() {
+        assert_eq!(
+            repo_from_analysis_slug("analysis", "bcircle/tli-dim-custom-ui/448").as_deref(),
+            Some("bcircle/tli-dim-custom-ui")
+        );
+        // Only an analysis carries its repo in the slug; a doc's path is a path.
+        assert_eq!(repo_from_analysis_slug("doc", "a/b/448"), None);
+        // Non-numeric tail or a deeper slug is not the owner/repo/N shape.
+        assert_eq!(repo_from_analysis_slug("analysis", "a/b/adhoc"), None);
+        assert_eq!(repo_from_analysis_slug("analysis", "a/b/c/448"), None);
+        assert_eq!(repo_from_analysis_slug("analysis", "448"), None);
     }
 
     #[test]
