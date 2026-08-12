@@ -115,13 +115,18 @@ Xenon speaks plain HTTP and expects TLS to terminate at a reverse proxy. Put it
 behind nginx/Caddy/Traefik and forward `X-Forwarded-Proto`.
 
 ```sh
-docker build -t xenon .
+docker pull ghcr.io/wk-j/xenon:latest
 docker run -d --name xenon -p 8787:8787 \
   -e XENON_SESSION_SECRET="$(openssl rand -hex 32)" \
   -e XENON_DATA_DIR=/data \
   -v xenon-data:/data \
-  xenon
+  ghcr.io/wk-j/xenon:latest
 ```
+
+Release images are also tagged with the exact version and minor series, for
+example `0.1.5` and `0.1`. Pin an exact version instead of `latest` when
+repeatable deployments matter. To build locally instead, run
+`docker build -t xenon .` and use `xenon` as the image name above.
 
 Back up the whole `XENON_DATA_DIR` — the SQLite database alone is not enough,
 because file bytes live beside it in `blobs/`.
