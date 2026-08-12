@@ -211,6 +211,30 @@ shows token counts and names each model as unpriced — a blank column is honest
 an invented total is not. Prices are applied on read, so fixing a rate fixes
 every past report.
 
+## CLI
+
+`xen` is a second binary in this repo that talks to a running Xenon over the
+same `/v1` protocol as the browse UI and Krypton. The server command stays
+`xenon`.
+
+```sh
+cargo run -p xen -- --help
+
+# against a local `make dev`:
+cargo run -p xen -- register --email you@example.com --password 'at least 12'
+cargo run -p xen -- token create --label 'this laptop' --save
+cargo run -p xen -- push my.project --kind doc --slug notes --title Notes --file README.md
+cargo run -p xen -- resource list my.project
+cargo run -p xen -- activity
+```
+
+Configuration lives in `~/.config/xenon/cli.toml` (mode 0600): the server URL,
+a session cookie from `xen login` / `xen register`, and an optional API token.
+`--url` / `--token` and `XENON_URL` / `XENON_TOKEN` override the file. Minting
+or revoking a token still needs a session — a token cannot mint another token.
+
+`--json` prints the server body instead of a table, for scripts.
+
 ## API
 
 See [`docs/01-protocol.md`](docs/01-protocol.md) for the wire contract. The full

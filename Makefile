@@ -5,7 +5,7 @@ help:
 	@echo "make watch    like dev, but rebuild and restart on every save"
 	@echo "make release  run locally, optimized build"
 	@echo "make reset    wipe ~/.config/xenon (accounts, tokens, published resources) then run"
-	@echo "make test     unit + end-to-end tests"
+	@echo "make test     unit + end-to-end tests (server and xen CLI)"
 	@echo "make lint     clippy, warnings denied"
 	@echo "make fmt      rustfmt in place"
 	@echo "make check    fmt --check + lint + test (what CI would run)"
@@ -24,18 +24,18 @@ reset:
 	@scripts/dev.sh --reset
 
 test:
-	cargo test
+	cargo test --workspace
 
 lint:
-	cargo clippy --all-targets -- -D warnings
+	cargo clippy --workspace --all-targets -- -D warnings
 
 fmt:
-	cargo fmt
+	cargo fmt --all
 
 check:
-	cargo fmt -- --check
-	cargo clippy --all-targets -- -D warnings
-	cargo test
+	cargo fmt --all -- --check
+	cargo clippy --workspace --all-targets -- -D warnings
+	cargo test --workspace
 
 docker:
 	docker build -t xenon .

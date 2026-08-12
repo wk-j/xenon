@@ -9,10 +9,12 @@ WORKDIR /src
 
 # Cache dependency compilation separately from source changes.
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir -p src && \
+COPY cli/Cargo.toml cli/Cargo.toml
+RUN mkdir -p src cli/src && \
     echo 'fn main() {}' > src/main.rs && \
     echo '' > src/lib.rs && \
-    cargo build --release && \
+    echo 'fn main() {}' > cli/src/main.rs && \
+    cargo build --release --bin xenon && \
     rm -rf src
 
 COPY src ./src
@@ -22,7 +24,7 @@ COPY src ./src
 # runtime — which is the right place, but only if the directory is copied at all.
 COPY assets ./assets
 COPY templates ./templates
-RUN touch src/main.rs src/lib.rs && cargo build --release
+RUN touch src/main.rs src/lib.rs && cargo build --release --bin xenon
 
 
 FROM debian:bookworm-slim
