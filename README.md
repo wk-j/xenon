@@ -112,7 +112,32 @@ is no long-lived credential to leak from a compose file or shell history.
 ## Deployment
 
 Xenon speaks plain HTTP and expects TLS to terminate at a reverse proxy. Put it
-behind nginx/Caddy/Traefik and forward `X-Forwarded-Proto`.
+behind nginx/Caddy/Traefik and forward `X-Forwarded-Proto`. Do **not** set
+`XENON_INSECURE_COOKIES` in production — browsers must hit HTTPS so the
+session cookie's `Secure` flag works.
+
+### Docker Compose + Caddy (automatic HTTPS)
+
+The repo ships a Compose stack that runs Xenon behind Caddy. Caddy obtains and
+renews a Let's Encrypt certificate for your domain.
+
+1. Point DNS `A`/`AAAA` for your hostname at the server.
+2. Open ports **80** and **443** to the public internet.
+3. Configure and start:
+
+```sh
+cp .env.example .env
+# set XENON_DOMAIN, ACME_EMAIL, and:
+#   openssl rand -hex 32   → XENON_SESSION_SECRET
+docker compose up -d
+```
+
+Files: [`docker-compose.yml`](docker-compose.yml), [`Caddyfile`](Caddyfile),
+[`.env.example`](.env.example). Xenon stays on the internal Compose network;
+only Caddy is published. After it is up, open `https://$XENON_DOMAIN/register`
+immediately and create the first (admin) account.
+
+### Docker only (no TLS)
 
 ```sh
 docker pull ghcr.io/wk-j/xenon:latest
@@ -123,13 +148,18 @@ docker run -d --name xenon -p 8787:8787 \
   ghcr.io/wk-j/xenon:latest
 ```
 
-Release images are also tagged with the exact version and minor series, for
-example `0.1.5` and `0.1`. Pin an exact version instead of `latest` when
-repeatable deployments matter. To build locally instead, run
+Put your own reverse proxy in front of `:8787` before exposing this to the
+internet. Release images are also tagged with the exact version and minor
+series, for example `0.1.5` and `0.1`. Pin an exact version instead of
+`latest` when repeatable deployments matter. To build locally instead, run
 `docker build -t xenon .` and use `xenon` as the image name above.
 
-Back up the whole `XENON_DATA_DIR` — the SQLite database alone is not enough,
-because file bytes live beside it in `blobs/`.
+### Backups
+
+Back up the whole `XENON_DATA_DIR` (the `xenon_data` volume in Compose) — the
+SQLite database alone is not enough, because file bytes live beside it in
+`blobs/`. With the Compose stack, also back up the `caddy_data` volume if you
+want to keep issued certificates across reinstalls.
 
 ## Concepts
 

@@ -1,0 +1,11 @@
+{
+	# Contact for Let's Encrypt expiry / account notices.
+	email {$ACME_EMAIL}
+}
+
+{$XENON_DOMAIN} {
+	encode zstd gzip
+
+	# Caddy sets X-Forwarded-For / X-Forwarded-Proto automatically.
+	reverse_proxy xenon:8787
+}

@@ -1,0 +1,48 @@
+# Xenon behind Caddy with automatic HTTPS (Let's Encrypt).
+#
+# Prerequisites:
+#   1. DNS A/AAAA for XENON_DOMAIN points at this host
+#   2. Ports 80 and 443 are reachable from the public internet
+#   3. Copy .env.example → .env and fill in the values
+#
+#   cp .env.example .env
+#   # edit .env
+#   docker compose up -d
+#
+# Caddy terminates TLS and reverse-proxies to Xenon on the internal network.
+# Xenon is not published on the host — only Caddy is.
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    environment:
+      XENON_DOMAIN: ${XENON_DOMAIN:?set XENON_DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - xenon
+
+  xenon:
+    image: ghcr.io/wk-j/xenon:0.1
+    restart: unless-stopped
+    environment:
+      XENON_SESSION_SECRET: ${XENON_SESSION_SECRET:?set XENON_SESSION_SECRET in .env}
+      XENON_DATA_DIR: /data
+      # Do not set XENON_INSECURE_COOKIES — browsers reach Xenon over HTTPS via Caddy.
+    volumes:
+      - xenon_data:/data
+    expose:
+      - "8787"
+
+volumes:
+  xenon_data:
+  caddy_data: # Let's Encrypt certs and account key — back this up
+  caddy_config:
