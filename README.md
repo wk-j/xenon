@@ -20,9 +20,10 @@ brew services start xenon
 ```
 
 Homebrew builds from source — `rust` comes in as a build-only dependency — and
-installs two commands. `xenon` is the server. `xenon-serve` wraps it and mints
+installs three commands. `xenon` is the server. `xenon-serve` wraps it and mints
 the session secret on first run, so the service starts with nothing to configure;
-that is what `brew services` runs. Track `master` instead of the last tag with
+that is what `brew services` runs. `xen` is the command-line client (login,
+invite, tokens, push). Track `master` instead of the last tag with
 `brew install --HEAD wk-j/tap/xenon`.
 
 Reaching it over plain `http://localhost` needs one more thing first: the session
@@ -150,7 +151,7 @@ docker run -d --name xenon -p 8787:8787 \
 
 Put your own reverse proxy in front of `:8787` before exposing this to the
 internet. Release images are also tagged with the exact version and minor
-series, for example `0.1.5` and `0.1`. Pin an exact version instead of
+series, for example `0.1.6` and `0.1`. Pin an exact version instead of
 `latest` when repeatable deployments matter. To build locally instead, run
 `docker build -t xenon .` and use `xenon` as the image name above.
 
@@ -215,17 +216,21 @@ every past report.
 
 `xen` is a second binary in this repo that talks to a running Xenon over the
 same `/v1` protocol as the browse UI and Krypton. The server command stays
-`xenon`.
+`xenon`. `brew install wk-j/tap/xenon` puts `xen` on your `PATH`. From a
+checkout, run it in place or install just the client:
 
 ```sh
-cargo run -p xen -- --help
+xen --help
+xen login --email you@example.com
+xen invite
+xen token create --label 'this laptop' --save
+xen push my.project --kind doc --slug notes --title Notes --file README.md
+xen resource list my.project
+xen activity
 
-# against a local `make dev`:
-cargo run -p xen -- register --email you@example.com --password 'at least 12'
-cargo run -p xen -- token create --label 'this laptop' --save
-cargo run -p xen -- push my.project --kind doc --slug notes --title Notes --file README.md
-cargo run -p xen -- resource list my.project
-cargo run -p xen -- activity
+# from this checkout, without installing:
+cargo run -p xen -- --help
+cargo install --path cli --locked
 ```
 
 Configuration lives in `~/.config/xenon/cli.toml` (mode 0600): the server URL,
