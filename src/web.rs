@@ -79,6 +79,17 @@ struct TokensTemplate {
     nav: Nav,
 }
 
+#[derive(askama::Template)]
+#[template(path = "admin.html")]
+struct AdminTemplate {
+    title: String,
+    css_url: String,
+    app_js_url: String,
+    page_js_url: String,
+    crumbs: Vec<Crumb>,
+    nav: Nav,
+}
+
 struct Crumb {
     label: String,
     href: Option<String>,
@@ -92,6 +103,8 @@ struct Nav {
     signed_in: bool,
     /// Display name, falling back to the email. Empty when anonymous.
     who: String,
+    /// The admin link is instance-wide; only the first account sees it.
+    is_admin: bool,
 }
 
 #[derive(askama::Template)]
@@ -105,7 +118,6 @@ struct ActivityTemplate {
     kinds: &'static [&'static str],
     kind_filter: Option<String>,
     project_filter: Option<String>,
-    signed_in: bool,
     days: Vec<FeedDay>,
     /// Cursor for the next (older) page; `None` when this is the last one.
     older: Option<i64>,
@@ -461,8 +473,11 @@ async fn usage_page(
     headers: HeaderMap,
     Path(project): Path<String>,
     Query(query): Query<UsageQuery>,
-) -> AppResult<Html<String>> {
+) -> AppResult<Response> {
     let (actor, nav) = viewer(&state, &headers);
+    if !has_browser_session(&actor) {
+        return Ok(redirect_to_login());
+    }
     let conn = state.db();
     let project_id = readable_project(&conn, actor.as_ref(), &project)?;
 
@@ -530,7 +545,7 @@ async fn usage_page(
     recent.truncate(RECENT_TURNS as usize);
 
     let (title, css_url, app_js_url) = chrome(&format!("{project} usage"));
-    render(&UsageTemplate {
+    Ok(render(&UsageTemplate {
         title,
         css_url,
         app_js_url,
@@ -610,7 +625,8 @@ async fn usage_page(
             .collect(),
         recent_truncated,
         unpriced,
-    })
+    })?
+    .into_response())
 }
 
 /// The two asset URLs every page needs. Kept in one place so a template cannot
@@ -645,6 +661,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/logout", post(logout))
         .route("/register", get(register_page))
         .route("/settings/tokens", get(tokens_page))
+        .route("/admin", get(admin_page))
         .route("/p/{project}", get(project_page))
         .route("/p/{project}/usage", get(usage_page))
         .route("/r/{project}/{kind}/{*slug}", get(resource_page))
@@ -678,10 +695,12 @@ fn viewer(state: &AppState, headers: &HeaderMap) -> (Option<Actor>, Nav) {
         Some(actor) => Nav {
             signed_in: true,
             who: display_name(&conn, &actor.user_id),
+            is_admin: actor.is_admin,
         },
         None => Nav {
             signed_in: false,
             who: String::new(),
+            is_admin: false,
         },
     };
     (actor, nav)
@@ -704,8 +723,11 @@ fn display_name(conn: &Connection, user_id: &str) -> String {
 
 // ------------------------------------------------------------------- pages
 
-async fn index(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AppResult<Html<String>> {
+async fn index(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AppResult<Response> {
     let (actor, nav) = viewer(&state, &headers);
+    if !has_browser_session(&actor) {
+        return Ok(redirect_to_login());
+    }
     let conn = state.db();
     // Most recently touched project first. A project has no updated_at of its
     // own, so the latest resource update stands in for it; a project with no
@@ -733,7 +755,7 @@ async fn index(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AppRes
         .collect::<Result<Vec<_>, _>>()?;
 
     let (title, css_url, app_js_url) = chrome("projects");
-    render(&IndexTemplate {
+    Ok(render(&IndexTemplate {
         title,
         css_url,
         app_js_url,
@@ -749,7 +771,8 @@ async fn index(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AppRes
                 resource_count,
             })
             .collect(),
-    })
+    })?
+    .into_response())
 }
 
 #[derive(Deserialize)]
@@ -778,8 +801,11 @@ async fn activity_page(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(query): Query<ActivityPageQuery>,
-) -> AppResult<Html<String>> {
+) -> AppResult<Response> {
     let (actor, nav) = viewer(&state, &headers);
+    if !has_browser_session(&actor) {
+        return Ok(redirect_to_login());
+    }
     let kind_filter = query
         .kind
         .as_deref()
@@ -834,12 +860,11 @@ async fn activity_page(
     }
 
     let (title, css_url, app_js_url) = chrome("activity");
-    render(&ActivityTemplate {
+    Ok(render(&ActivityTemplate {
         title,
         css_url,
         app_js_url,
         crumbs: Vec::new(),
-        signed_in: nav.signed_in,
         nav,
         kinds: &event::KINDS,
         kind_filter,
@@ -847,11 +872,12 @@ async fn activity_page(
         days,
         older,
         query_base,
-    })
+    })?
+    .into_response())
 }
 
 /// One event as a sentence: actor, verb, object. The verb is the only place the
-/// eleven kinds differ, so it is the only thing that switches on kind.
+/// event kinds differ, so it is the only thing that switches on kind.
 fn feed_row(e: &event::EventView, now: i64) -> FeedRow {
     let (verb, resource_kind) = match e.kind.as_str() {
         event::RESOURCE_PUBLISH => ("published", detail_str(e, "kind")),
@@ -865,6 +891,16 @@ fn feed_row(e: &event::EventView, now: i64) -> FeedRow {
         event::TOKEN_REVOKE => ("revoked token", None),
         event::INVITE_CREATE => ("created", None),
         event::INVITE_CLAIM => ("joined with an invite as", None),
+        event::ACCOUNT_DISABLE => ("disabled", None),
+        event::ACCOUNT_ENABLE => ("enabled", None),
+        event::PROJECT_VISIBILITY => {
+            let verb = match e.detail.get("is_public").and_then(|v| v.as_bool()) {
+                Some(true) => "made public",
+                Some(false) => "made private",
+                None => "changed visibility of",
+            };
+            (verb, None)
+        }
         _ => ("did", None),
     };
     FeedRow {
@@ -910,8 +946,11 @@ async fn project_page(
     headers: HeaderMap,
     Path(project): Path<String>,
     Query(query): Query<ProjectQuery>,
-) -> AppResult<Html<String>> {
+) -> AppResult<Response> {
     let (actor, nav) = viewer(&state, &headers);
+    if !has_browser_session(&actor) {
+        return Ok(redirect_to_login());
+    }
     let conn = state.db();
     let project_id = readable_project(&conn, actor.as_ref(), &project)?;
     let github_repo = project_github_repo(&conn, &project_id)?;
@@ -963,7 +1002,7 @@ async fn project_page(
 
     let now = crate::util::now();
     let (title, css_url, app_js_url) = chrome(&project);
-    render(&ProjectTemplate {
+    Ok(render(&ProjectTemplate {
         title,
         css_url,
         app_js_url,
@@ -996,7 +1035,8 @@ async fn project_page(
                 updated_exact: crate::util::format_ymd(updated_at),
             })
             .collect(),
-    })
+    })?
+    .into_response())
 }
 
 #[derive(Deserialize)]
@@ -1009,7 +1049,7 @@ async fn resource_page(
     headers: HeaderMap,
     Path((project, kind, raw_slug)): Path<(String, String, String)>,
     Query(query): Query<ResourceQuery>,
-) -> AppResult<Html<String>> {
+) -> AppResult<Response> {
     // `/r/<project>/<kind>/<slug>` and `/r/<project>/<kind>/<slug>/@<seq>` —
     // the pinned-revision permalink is a trailing segment so the slug itself
     // may still contain slashes (an analysis bundle is `owner/repo/number`).
@@ -1022,6 +1062,9 @@ async fn resource_page(
     };
 
     let (actor, nav) = viewer(&state, &headers);
+    if !has_browser_session(&actor) {
+        return Ok(redirect_to_login());
+    }
     let conn = state.db();
     let project_id = readable_project(&conn, actor.as_ref(), &project)?;
     let github_repo =
@@ -1056,7 +1099,7 @@ async fn resource_page(
     let (title, css_url, app_js_url) = chrome(&detail.summary.title);
 
     let Some(revision) = detail.revision else {
-        return render(&ResourceTemplate {
+        return Ok(render(&ResourceTemplate {
             title,
             css_url,
             app_js_url,
@@ -1072,7 +1115,8 @@ async fn resource_page(
             files: Vec::new(),
             content: "<p class=\"empty\">no committed revision</p>".to_string(),
             references: Vec::new(),
-        });
+        })?
+        .into_response());
     };
 
     let selected = query
@@ -1125,7 +1169,7 @@ async fn resource_page(
 
     let references = collect_references(&content);
 
-    render(&ResourceTemplate {
+    Ok(render(&ResourceTemplate {
         title,
         css_url,
         app_js_url,
@@ -1141,7 +1185,8 @@ async fn resource_page(
         files,
         content,
         references,
-    })
+    })?
+    .into_response())
 }
 
 /// Build the byline for a revision, keeping the verified and the claimed halves
@@ -1724,6 +1769,29 @@ async fn tokens_page(
     .into_response())
 }
 
+async fn admin_page(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AppResult<Response> {
+    let (actor, nav) = viewer(&state, &headers);
+    if !actor.as_ref().is_some_and(|a| a.is_session()) {
+        return Ok(redirect_to_login());
+    }
+    // Not-found rather than forbidden: a signed-in non-admin should not learn
+    // that this surface exists from the status code. The nav already hid the
+    // link; typing the URL is the remaining path.
+    if !actor.is_some_and(|a| a.is_admin) {
+        return Err(AppError::not_found("no such page"));
+    }
+    let (title, css_url, app_js_url) = chrome("admin");
+    Ok(render(&AdminTemplate {
+        title,
+        css_url,
+        app_js_url,
+        page_js_url: assets::url("admin.js"),
+        crumbs: Vec::new(),
+        nav,
+    })?
+    .into_response())
+}
+
 /// Sign-out for the browser. `POST /v1/auth/logout` answers JSON, which is right
 /// for a client and wrong for a nav control: posting the form there would leave
 /// the reader looking at `{"ok":true}`. This ends the same session and sends
@@ -1752,9 +1820,15 @@ async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AppRe
 }
 
 /// Web pages answer an unauthenticated read with a redirect to sign-in rather
-/// than a JSON error, so a bookmarked private URL lands somewhere useful.
+/// than a JSON error, so a bookmarked URL lands somewhere useful.
 pub fn redirect_to_login() -> Response {
     (StatusCode::SEE_OTHER, [(header::LOCATION, "/login")], ()).into_response()
+}
+
+/// The browse UI is for people, not tokens. A missing or token-only caller
+/// is sent to sign in rather than shown an empty shell.
+fn has_browser_session(actor: &Option<Actor>) -> bool {
+    actor.as_ref().is_some_and(|a| a.is_session())
 }
 
 #[cfg(test)]

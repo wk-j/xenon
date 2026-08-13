@@ -161,8 +161,8 @@ adding a row of chrome.
 - **Unsealed revision** — carries an author but is invisible to every read route, so nothing shows.
 - **Renamed account** — the byline follows the rename; the activity log does not. Both are correct
   for what they are, and the spec above says why.
-- **Anonymous reader on a public project** — sees the byline. A public project's authorship is
-  already implied by its owner being public; hiding it would be theatre.
+- **Signed-in reader on a public project** — sees the byline. A public project's authorship is
+  already implied by its owner being readable to every account; hiding it would be theatre.
 
 ## Testing
 

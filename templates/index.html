@@ -3,11 +3,7 @@
 {% block content %}
 {% if projects.is_empty() %}
 <p class="empty">
-  {%- if nav.signed_in -%}
-    no projects yet — push one from krypton with #push
-  {%- else -%}
-    no public projects — sign in to see your own
-  {%- endif -%}
+  no projects yet — push one from krypton with #push
 </p>
 {% else %}
 <div class="grid">

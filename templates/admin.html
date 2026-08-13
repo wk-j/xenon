@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block page_script %}
+<script src="{{ page_js_url }}" defer></script>
+{% endblock %}
+
+{% block content %}
+<h2>administration</h2>
+<p class="meta">every account on this instance, every project, and the invite codes that admit the next person. session only — a token cannot open this page.</p>
+<p class="msg" id="m"></p>
+
+<h3 class="admin__h">users</h3>
+<div class="scroll">
+<table class="data"><thead><tr>
+<th>name</th><th>email</th><th>role</th><th>projects</th><th>joined</th><th></th>
+</tr></thead><tbody id="users"></tbody></table>
+</div>
+<p class="empty" id="users-none" hidden>no accounts</p>
+
+<h3 class="admin__h">projects</h3>
+<div class="scroll">
+<table class="data"><thead><tr>
+<th>project</th><th>owner</th><th>visibility</th><th>resources</th><th></th>
+</tr></thead><tbody id="projects"></tbody></table>
+</div>
+<p class="empty" id="projects-none" hidden>no projects yet</p>
+
+<h3 class="admin__h">invites</h3>
+<p class="meta">single use, seven days. the code is shown once, here, and never stored in the clear.</p>
+<p><button type="button" id="mint">create invite</button></p>
+<div id="secret"></div>
+<div class="scroll">
+<table class="data"><thead><tr>
+<th>status</th><th>created</th><th>expires</th><th>created by</th><th>used by</th>
+</tr></thead><tbody id="invites"></tbody></table>
+</div>
+<p class="empty" id="invites-none" hidden>no invites issued yet</p>
+{% endblock %}

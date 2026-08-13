@@ -48,16 +48,22 @@ pub const TOKEN_CREATE: &str = "token.create";
 pub const TOKEN_REVOKE: &str = "token.revoke";
 pub const INVITE_CREATE: &str = "invite.create";
 pub const INVITE_CLAIM: &str = "invite.claim";
+pub const ACCOUNT_DISABLE: &str = "account.disable";
+pub const ACCOUNT_ENABLE: &str = "account.enable";
+pub const PROJECT_VISIBILITY: &str = "project.visibility";
 
 /// Every kind, in the order the filter row shows them.
-pub const KINDS: [&str; 11] = [
+pub const KINDS: [&str; 14] = [
     RESOURCE_PUBLISH,
     RESOURCE_REVISE,
     PROJECT_CREATE,
+    PROJECT_VISIBILITY,
     ACCOUNT_REGISTER,
     ACCOUNT_LOGIN,
     ACCOUNT_LOGIN_FAILED,
     ACCOUNT_LOGOUT,
+    ACCOUNT_DISABLE,
+    ACCOUNT_ENABLE,
     TOKEN_CREATE,
     TOKEN_REVOKE,
     INVITE_CREATE,
@@ -259,12 +265,13 @@ pub struct Query<'a> {
 }
 
 /// Read the feed as `viewer` may see it. `viewer` is `None` for an anonymous
-/// caller, which leaves only public-project rows.
+/// caller, which sees nothing — this instance is not a public website.
 ///
 /// The visibility predicate is one expression applied to every query, so there
 /// is exactly one place to audit:
 ///
-/// * `project` rows — the project is public, or the viewer owns it;
+/// * `project` rows — the viewer is signed in and the project is public, or
+///   the viewer owns it;
 /// * `account` rows — the viewer is the actor;
 /// * an admin sees everything, which is the point of an admin on a self-hosted
 ///   instance and the only way the security rows are useful to anyone.
@@ -296,7 +303,7 @@ pub fn query(
          LEFT JOIN resource r ON r.id = e.resource_id
          WHERE (
              ?3
-             OR (e.audience = 'project' AND (p.is_public = 1 OR p.owner_id = ?1 OR p.id IS NULL))
+             OR (e.audience = 'project' AND ?1 <> '' AND (p.is_public = 1 OR p.owner_id = ?1 OR p.id IS NULL))
              OR (e.audience = 'account' AND e.actor_id = ?1 AND ?1 <> '')
          )
            AND (?4 = 0  OR e.rowid < ?4)
@@ -415,8 +422,10 @@ mod tests {
         assert_eq!(stranger[0].subject, "public thing");
 
         let anonymous = query(&conn, None, &q).unwrap();
-        assert_eq!(anonymous.len(), 1);
-        assert_eq!(anonymous[0].subject, "public thing");
+        assert!(
+            anonymous.is_empty(),
+            "nobody is signed in, so nothing is readable: {anonymous:?}"
+        );
     }
 
     #[test]
@@ -483,7 +492,7 @@ mod tests {
 
         let first = query(
             &conn,
-            None,
+            Some(&viewer("u1", false)),
             &Query {
                 limit: 2,
                 ..Default::default()
@@ -497,7 +506,7 @@ mod tests {
 
         let next = query(
             &conn,
-            None,
+            Some(&viewer("u1", false)),
             &Query {
                 limit: 2,
                 cursor: Some(first[1].seq),
@@ -536,7 +545,7 @@ mod tests {
         assert_eq!(prune(&conn, 500).unwrap(), 1);
         let left = query(
             &conn,
-            None,
+            Some(&viewer("u1", false)),
             &Query {
                 limit: DEFAULT_LIMIT,
                 ..Default::default()

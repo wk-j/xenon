@@ -306,9 +306,9 @@ fn bearer(headers: &HeaderMap) -> Option<String> {
 }
 
 /// Resolves the caller. Returns `Ok(None)` when no credential was supplied at
-/// all (the caller decides whether that is allowed — public projects permit
-/// anonymous reads); returns `Err` when a credential was supplied but is bad,
-/// so a typo never silently degrades into an anonymous request.
+/// all (the caller decides whether that is allowed — login and register do);
+/// returns `Err` when a credential was supplied but is bad, so a typo never
+/// silently degrades into an anonymous request.
 pub fn authenticate(conn: &Connection, headers: &HeaderMap) -> AppResult<Option<Actor>> {
     if let Some(raw) = bearer(headers) {
         return Ok(Some(authenticate_token(conn, &raw)?));

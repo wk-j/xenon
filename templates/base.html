@@ -27,12 +27,14 @@
       and a `tokens` link that bounced an anonymous reader straight back. -#}
   <nav>
     {#- Activity is the home page, so the logo and the first nav link are the
-        same destination. It is visible to everyone: an anonymous visitor to a
-        public instance sees the public slice of it. -#}
+        same destination. It is visible once you are signed in. -#}
     <a href="/">activity</a>
     <a href="/projects">projects</a>
     {%- if nav.signed_in %}
     <a href="/settings/tokens">tokens</a>
+    {%- if nav.is_admin %}
+    <a href="/admin">admin</a>
+    {%- endif %}
     <span class="top__who">{{ nav.who }}</span>
     {#- A form, not a link: `SameSite=Lax` keeps the session cookie off a
         cross-site POST, so nobody else's page can sign this reader out. -#}

@@ -735,10 +735,11 @@ async fn list_projects(
     headers: HeaderMap,
 ) -> AppResult<Json<Vec<serde_json::Value>>> {
     let conn = state.db();
-    let actor = auth::authenticate(&conn, &headers)?;
+    // Public is "any account on this instance", not the open internet. No
+    // credential is therefore not a reader.
+    let actor = auth::require_actor(&conn, &headers)?;
 
-    // Anonymous callers see only public projects; an authenticated caller also
-    // sees their own.
+    // A signed-in caller sees every public project plus the ones they own.
     let mut stmt = conn.prepare(
         "SELECT p.slug, p.is_public, p.created_at, p.github_repo,
                 (SELECT count(*) FROM resource r WHERE r.project_id = p.id)
@@ -746,10 +747,7 @@ async fn list_projects(
          WHERE p.is_public = 1 OR p.owner_id = ?1
          ORDER BY p.slug",
     )?;
-    let owner = actor
-        .as_ref()
-        .map(|a| a.user_id.clone())
-        .unwrap_or_default();
+    let owner = actor.user_id.clone();
     let rows = stmt
         .query_map([owner], |r| {
             Ok(serde_json::json!({
@@ -853,7 +851,7 @@ async fn list_activity(
     Query(query): Query<ActivityQuery>,
 ) -> AppResult<Json<serde_json::Value>> {
     let conn = state.db();
-    let actor = auth::authenticate(&conn, &headers)?;
+    let actor = auth::require_actor(&conn, &headers)?;
 
     if let Some(kind) = &query.kind {
         if !event::KINDS.contains(&kind.as_str()) {
@@ -864,7 +862,7 @@ async fn list_activity(
     let limit = query.limit.unwrap_or(event::DEFAULT_LIMIT);
     let events = event::query(
         &conn,
-        actor.as_ref(),
+        Some(&actor),
         &event::Query {
             project: query.project.as_deref(),
             kind: query.kind.as_deref(),
@@ -891,8 +889,8 @@ async fn list_resources(
     Query(query): Query<ListResourcesQuery>,
 ) -> AppResult<Json<Vec<ResourceSummary>>> {
     let conn = state.db();
-    let actor = auth::authenticate(&conn, &headers)?;
-    let project_id = readable_project(&conn, actor.as_ref(), &project)?;
+    let actor = auth::require_actor(&conn, &headers)?;
+    let project_id = readable_project(&conn, Some(&actor), &project)?;
 
     if let Some(kind) = &query.kind {
         if !RESOURCE_KINDS.contains(&kind.as_str()) {
@@ -945,14 +943,14 @@ async fn get_resource(
     Query(query): Query<GetResourceQuery>,
 ) -> AppResult<Json<ResourceDetail>> {
     let conn = state.db();
-    let actor = auth::authenticate(&conn, &headers)?;
+    let actor = auth::require_actor(&conn, &headers)?;
     // `seq` used to be hardcoded to None here, so `?seq=1` was accepted and
     // silently ignored — a caller asking for an old revision got the newest one
     // and had no way to tell. The browse UI never hit it because it pins through
     // the `/@N` path segment instead.
     Ok(Json(load_resource_detail(
         &conn,
-        actor.as_ref(),
+        Some(&actor),
         &id,
         query.seq,
     )?))
@@ -964,9 +962,9 @@ async fn list_revisions(
     Path(id): Path<String>,
 ) -> AppResult<Json<Vec<serde_json::Value>>> {
     let conn = state.db();
-    let actor = auth::authenticate(&conn, &headers)?;
+    let actor = auth::require_actor(&conn, &headers)?;
     let (_, project_id) = resource_row(&conn, &id)?;
-    assert_project_readable(&conn, actor.as_ref(), &project_id)?;
+    assert_project_readable(&conn, Some(&actor), &project_id)?;
 
     // This list is exactly the "who changed this, when" view, so it carries the
     // author per row. The join is done per row rather than in SQL because the
@@ -1012,7 +1010,7 @@ async fn get_file(
     Path((revision, path)): Path<(String, String)>,
 ) -> AppResult<Response> {
     let conn = state.db();
-    let actor = auth::authenticate(&conn, &headers)?;
+    let actor = auth::require_actor(&conn, &headers)?;
 
     let row: Option<(String, String, String)> = conn
         .query_row(
@@ -1028,7 +1026,7 @@ async fn get_file(
     let Some((sha256, content_type, project_id)) = row else {
         return Err(AppError::not_found("no such file in that revision"));
     };
-    assert_project_readable(&conn, actor.as_ref(), &project_id)?;
+    assert_project_readable(&conn, Some(&actor), &project_id)?;
     drop(conn);
 
     let bytes = state.blobs.read(&sha256)?;
@@ -1116,12 +1114,25 @@ fn check_read(
     owner_id: &str,
     project_id: &str,
 ) -> AppResult<()> {
-    if is_public {
-        return Ok(());
-    }
     let Some(actor) = actor else {
         return Err(AppError::not_found("no such project"));
     };
+    // Public means every account on this instance may read it. A visitor
+    // with no credential is not an account, so they never take this path
+    // (handlers refuse them first). The scope check is what stops a
+    // write-only token from becoming a reader just because the project
+    // was made public.
+    if is_public {
+        actor.require_scope(auth::SCOPE_RESOURCE_READ)?;
+        return Ok(());
+    }
+    // A session-authenticated admin is looking after the instance, so a
+    // private project they do not own is still a project they may open.
+    // A token never gets this: the same user minting a Krypton token must
+    // not quietly inherit a roster of everyone else's private work.
+    if actor.is_admin && actor.is_session() {
+        return Ok(());
+    }
     if actor.user_id != owner_id {
         return Err(AppError::not_found("no such project"));
     }

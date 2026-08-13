@@ -128,6 +128,7 @@ that loses rows when something is deleted is not a log.
 | `resource.publish` | project | `seal_revision`, seq == 1 | resource title | `{kind, slug}` |
 | `resource.revise` | project | `seal_revision`, seq > 1 | resource title | `{kind, slug, seq}` |
 | `project.create` | project | `resolve_or_create_project` | project slug | `{}` |
+| `project.visibility` | project | admin `update_project` | project slug | `{is_public}` |
 | `account.register` | account | `register` | email | `{ip, admin}` |
 | `account.login` | account | `login` | email | `{ip, user_agent}` |
 | `account.login_failed` | account | `login`, on rejection | attempted email | `{ip}` |
@@ -136,9 +137,11 @@ that loses rows when something is deleted is not a log.
 | `token.revoke` | account | `revoke_token` | token label | `{token_id}` |
 | `invite.create` | account | `create_invite` | — | `{}` |
 | `invite.claim` | account | `register` with a code | email | `{}` |
+| `account.disable` | account | admin `update_user` | target email | `{user_id}` |
+| `account.enable` | account | admin `update_user` | target email | `{user_id}` |
 
 **Reads are not recorded.** Every page view and every blob fetch would outnumber content events by
-orders of magnitude, turn a metadata database into a web log, and bury the eleven rows above in
+orders of magnitude, turn a metadata database into a web log, and bury the fourteen rows above in
 noise. An access log belongs in the reverse proxy. This is the one decision most worth overturning
 if the intent was an audit trail rather than a feed — say so and it becomes a separate table with
 its own retention, not extra rows in this one.
@@ -182,13 +185,14 @@ shift a page, and no ties, so it cannot repeat or skip one either. Visibility is
 applied to every query:
 
 ```sql
-WHERE (e.audience = 'project' AND (p.is_public = 1 OR p.owner_id = :me))
+WHERE (e.audience = 'project' AND :me <> '' AND (p.is_public = 1 OR p.owner_id = :me))
    OR (e.audience = 'account' AND e.actor_id = :me)
    OR :is_admin
 ```
 
-Anonymous callers pass `:me = ''` and match only public-project rows. An admin sees everything,
-which is the norm for a self-hosted instance and the only way the security rows are useful.
+Anonymous callers pass `:me = ''` and match nothing. A signed-in caller sees public-project rows
+and their own. An admin sees everything, which is the norm for a self-hosted instance and the only
+way the security rows are useful.
 
 ### The feed page
 
@@ -204,11 +208,10 @@ Server-rendered, no JavaScript, matching the rest of the browse UI:
   chip, so the security log is visually distinct without a second page.
 - **Filters** — `?project=` and `?kind=` render as the existing `.kinds` chip row.
 - **Paging** — an `older →` link carrying `?before=`, so paging works without JS.
-- **Empty state** — "no activity yet — push something from krypton with `#push`" when signed in,
-  "no public activity" when not.
-- Nav gains `activity` beside `projects`, always visible (an anonymous visitor to a public instance
-  sees the public slice). Once the feed became the home page, `activity` moved to the front of the
-  nav and the project list took `/projects`.
+- **Empty state** — "nothing here yet — publish something from krypton with `#push`".
+- Nav gains `activity` beside `projects`. An anonymous visitor is sent to `/login`; once the feed
+  became the home page, `activity` moved to the front of the nav and the project list took
+  `/projects`.
 
 ### Retention
 
@@ -239,7 +242,8 @@ New tests in `tests/flow.rs`:
 1. publishing then re-publishing changed content yields exactly `resource.publish` + `resource.revise`;
 2. an unchanged re-push adds no event;
 3. a second user sees neither the first user's private-project events nor any of their account events;
-4. anonymous sees public-project events only, and no account events at all;
+4. anonymous is refused (`401` on the API, `303` to `/login` on the page); a second signed-in
+   account sees public-project events and none of another user's private or account events;
 5. a failed login is recorded with `actor_id` NULL and is invisible to non-admins;
 6. `/activity` renders, groups by day, and `?before=` returns the next page without overlap;
 7. `prune()` drops rows past the retention window and leaves the rest.

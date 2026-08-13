@@ -15,11 +15,7 @@
 
 {% if days.is_empty() %}
 <p class="empty">
-  {%- if signed_in -%}
-    nothing here yet — publish something from krypton with #push
-  {%- else -%}
-    no public activity
-  {%- endif -%}
+  nothing here yet — publish something from krypton with #push
 </p>
 {% else %}
 {%- for day in days %}

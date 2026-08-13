@@ -81,7 +81,8 @@ unless you set `XENON_ALLOW_SIGNUP=1`.
 
 The home page is the **activity feed** — what was published, revised, signed
 into, and minted, newest first and grouped by day. The project list lives at
-`/projects`, one click away in the nav.
+`/projects`, one click away in the nav. The first account also gets **`/admin`**
+— every user, every project, and a button that mints the next invite.
 
 Mint a token at `/settings/tokens`, then point Krypton at it:
 
@@ -189,8 +190,13 @@ exposes a half-uploaded resource.
 - Uploaded HTML is agent-authored and is framed `sandbox`ed. Uploaded markdown
   renders with raw HTML disabled. Raw file reads send `nosniff`, `no-store`,
   `no-referrer`, and a restrictive CSP.
-- A caller who may not read a project is told it does not exist, so project
-  names are not enumerable.
+- The browse UI and every data API require a login. A visitor with no session
+  is sent to `/login`; a request with no credential is `401`. `/healthz`,
+  `/register`, and `/assets/*` stay reachable so a person can get in.
+- **Public** means every account on this instance may read the project. It does
+  not mean the open internet.
+- A caller who may not read a private project is told it does not exist, so
+  project names are not enumerable.
 
 ## LLM usage
 
@@ -249,7 +255,7 @@ design and its rationale live in the Krypton repo at
 ## Development
 
 ```sh
-make test    # 92 unit + 50 end-to-end tests
+make test    # 105 unit + 60 end-to-end tests
 make lint    # clippy, warnings denied
 make fmt     # rustfmt in place
 make check   # fmt --check + lint + test

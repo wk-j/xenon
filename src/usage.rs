@@ -449,8 +449,8 @@ async fn read_usage(
     Query(query): Query<UsageQuery>,
 ) -> AppResult<Json<UsageResponse>> {
     let conn = state.db();
-    let actor = auth::authenticate(&conn, &headers)?;
-    let project_id = readable_project(&conn, actor.as_ref(), &project)?;
+    let actor = auth::require_actor(&conn, &headers)?;
+    let project_id = readable_project(&conn, Some(&actor), &project)?;
     let response = aggregate(&conn, &state.prices, &project, &project_id, &query)?;
     Ok(Json(response))
 }

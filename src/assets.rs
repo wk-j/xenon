@@ -8,8 +8,8 @@
 // They are still baked into the binary at compile time with `include_str!`, so
 // Xenon remains one static binary with no external services and nothing to
 // deploy alongside it. `include_str!` rather than `rust-embed` because there are
-// five files and no directory walk to do; the crate earns its place when the
-// count grows, and swapping it in later does not change any URL.
+// a handful of files and no directory walk to do; the crate earns its place when
+// the count grows, and swapping it in later does not change any URL.
 //
 // Extracting the scripts is also what makes a real Content-Security-Policy
 // possible on the browse UI: inline scripts are why one cannot be set today.
@@ -56,6 +56,11 @@ const ASSETS: &[Asset] = &[
     Asset {
         name: "tokens.js",
         body: include_str!("../assets/tokens.js"),
+        content_type: "text/javascript; charset=utf-8",
+    },
+    Asset {
+        name: "admin.js",
+        body: include_str!("../assets/admin.js"),
         content_type: "text/javascript; charset=utf-8",
     },
 ];
@@ -164,7 +169,7 @@ mod tests {
         let app = ASSETS[index_of("app.js").unwrap()].body;
         assert!(app.contains("function xreq") || app.contains("xreq("));
         assert!(app.contains("function xfail"));
-        for page in ["login.js", "register.js", "tokens.js"] {
+        for page in ["login.js", "register.js", "tokens.js", "admin.js"] {
             let body = ASSETS[index_of(page).unwrap()].body;
             assert!(
                 body.contains("xreq(") || body.contains("xfail("),

@@ -22,9 +22,9 @@ Scopes: `resource:read`, `resource:write`, `project:admin`. A session carries th
 user's full authority. **A token can never mint another token** — every
 `/v1/tokens` and `/v1/invites` operation requires a session.
 
-Supplying no credential is allowed on read routes and yields anonymous access
-(public projects only). Supplying a *bad* credential is always an error, never a
-silent downgrade.
+Supplying no credential is refused on every data route (`401 unauthenticated`).
+Login, register, `/healthz`, and `/assets/*` stay open so a person can get in.
+Supplying a *bad* credential is always an error, never a silent downgrade.
 
 ## Accounts
 
@@ -57,6 +57,41 @@ label, scopes, project, timestamps. Never the secret.
 ### `POST /v1/invites` *(admin, session)*
 
 → `{ code, expires_at }`. Single use, 7-day default.
+
+## Administration *(admin, session)*
+
+The first account is the admin. These routes are how that person looks after the
+instance. Every one requires a session — an API token, even one minted by the
+admin, is refused with `403 session_required`. A non-admin session is
+`403 admin_required`.
+
+### `GET /v1/admin/users` · `PATCH /v1/admin/users/{id}`
+
+List every account → `[{ id, email, display_name, is_admin, created_at,
+disabled_at, project_count }]`.
+
+Patch takes `{ "disabled": true|false }`. Disable signs the account out of
+every session immediately; their tokens start failing with `401 account_disabled`
+on the next request. Work they already published stays. An admin cannot disable
+themselves (`403 cannot_disable_self`). Accounts are never deleted.
+
+### `GET /v1/admin/projects` · `PATCH /v1/admin/projects/{project}`
+
+List every project, including private ones the admin does not own →
+`[{ id, slug, is_public, github_repo, created_at, resource_count, owner }]`.
+
+Patch takes `{ "is_public": true|false }`. That is how a project becomes
+readable by every account on this instance. There is no other write path
+for visibility, and there is no anonymous reader.
+
+A session-authenticated admin may also *read* any project through the ordinary
+browse and `/v1` read routes. A token never inherits that.
+
+### `GET /v1/admin/invites`
+
+List issued codes as metadata only — created/expires/used, who minted, who
+claimed. The plaintext code is returned once, from `POST /v1/invites`, and is
+not stored.
 
 ## Tokens *(session only)*
 
@@ -199,8 +234,9 @@ to an account would rebuild the existence oracle `register` refuses to be.
 Reads are not recorded; see `docs/03-activity-feed.md`. Rows older than
 `XENON_ACTIVITY_RETENTION_DAYS` (default 90, `0` = forever) are pruned from the write path.
 
-Read needs `resource:read` (or a session, or a public project). Uncommitted
-revisions are invisible to every read route.
+Read needs `resource:read` or a session. A **public** project is readable by
+any authenticated account; a private one is only the owner (and an admin
+session). Uncommitted revisions are invisible to every read route.
 
 Raw file reads send `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`,
 `Referrer-Policy: no-referrer`, and a restrictive CSP — uploaded bytes are
@@ -212,7 +248,7 @@ agent-authored and untrusted.
 filterable by kind · `/p/<project>/usage` the LLM usage ledger ·
 `/r/<project>/<kind>/<slug>` the resource ·
 `/r/<project>/<kind>/<slug>/@<seq>` a pinned revision · `/register` · `/login` ·
-`POST /logout` · `/settings/tokens`.
+`POST /logout` · `/settings/tokens` · `/admin` (admin session).
 
 The feed is the home page: opening the server answers *what has happened* before
 *what exists*. `/activity` was its address until then and answers `303` to `/`,
@@ -222,8 +258,9 @@ A project has two pages — its resources and its usage — and each links to th
 other. They are peers, not a filter of one another: usage is a second body of
 data under the same project, not a sixth resource kind.
 
-`/settings/tokens` is the one private page: without a session it answers `303`
-to `/login` rather than rendering a shell its script would then have to empty.
+Every browse page except `/login` and `/register` requires a session: without
+one they answer `303` to `/login`. `/admin` is 404 to a signed-in non-admin, so
+the URL does not advertise itself.
 
 `POST /logout` is the browse UI's sign-out form. It ends the same session as
 `POST /v1/auth/logout` but answers `303` to `/`, since a form post that lands on
@@ -231,7 +268,7 @@ to `/login` rather than rendering a shell its script would then have to empty.
 session cookie off a cross-site attempt to sign someone out.
 
 The chrome is drawn per reader: signed in, the nav shows the account, `tokens`,
-and `sign out`; anonymous, it shows `sign in` only.
+and `sign out`; an admin also sees `admin`. Anonymous, it shows `sign in` only.
 
 Markdown renders server-side with raw HTML disabled. HTML artifacts render in a
 `sandbox`ed iframe.
@@ -281,8 +318,8 @@ rejects deliberately, since a row the server will never accept would otherwise
 wedge everything behind it. At most 500 turns per request. `cost` is stored only
 when the *adapter* reported one; estimates are never persisted.
 
-`GET /v1/projects/{project}/usage?from=&to=&group=` — `resource:read`, a session,
-or a public project. `from`/`to` are epoch **milliseconds**, `from` inclusive and
+`GET /v1/projects/{project}/usage?from=&to=&group=` — `resource:read` or a
+session. `from`/`to` are epoch **milliseconds**, `from` inclusive and
 `to` exclusive. `group` is one of `day` (default), `model`, `lane`, `backend` —
 a fixed set, never interpolated into SQL.
 

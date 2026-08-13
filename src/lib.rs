@@ -4,6 +4,7 @@
 // docs/212-xenon-resource-server.md for the full design and its rationale.
 
 pub mod account;
+pub mod admin;
 pub mod api;
 pub mod assets;
 pub mod auth;
@@ -33,6 +34,7 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         .merge(api::routes(max_blob_bytes))
         .merge(usage::routes())
         .merge(account::routes())
+        .merge(admin::routes())
         .merge(assets::routes())
         .merge(web::routes())
         .with_state(state)

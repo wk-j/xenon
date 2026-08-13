@@ -1013,7 +1013,7 @@ async fn malformed_manifests_are_rejected_at_the_edge() {
 }
 
 #[tokio::test]
-async fn anonymous_callers_see_public_projects_only() {
+async fn unauthenticated_callers_cannot_read_and_public_is_for_any_account() {
     let server = Server::start();
     let session = server.register_first().await;
     let token = server
@@ -1037,17 +1037,20 @@ async fn anonymous_callers_see_public_projects_only() {
         )
         .await;
 
-    let anon = server.get("/v1/projects", None).await;
-    assert!(
-        anon.body.as_array().unwrap().is_empty(),
-        "private projects must not be listed"
+    assert_eq!(
+        server.get("/v1/projects", None).await.status,
+        StatusCode::UNAUTHORIZED
     );
     assert_eq!(
         server
             .get("/v1/projects/krypton/resources", None)
             .await
             .status,
-        StatusCode::NOT_FOUND
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        server.get("/v1/activity", None).await.status,
+        StatusCode::UNAUTHORIZED
     );
 
     // A bad credential is an error, never a silent downgrade to anonymous.
@@ -1055,6 +1058,62 @@ async fn anonymous_callers_see_public_projects_only() {
         .get("/v1/projects", Some("xen_aaaaaaaaaaaa_bbbbbbbb"))
         .await;
     assert_eq!(bogus.status, StatusCode::UNAUTHORIZED);
+
+    let (friend, _) = register_invited(&server, &session, "friend@example.com").await;
+    assert_eq!(
+        server
+            .get(
+                "/v1/projects/krypton/resources",
+                Some(&session_header(&friend)),
+            )
+            .await
+            .status,
+        StatusCode::NOT_FOUND,
+        "a private project is still only the owner's"
+    );
+
+    let opened = server
+        .patch(
+            "/v1/admin/projects/krypton",
+            Some(&session_header(&session)),
+            json!({ "is_public": true }),
+        )
+        .await;
+    assert_eq!(opened.status, StatusCode::OK, "{:?}", opened.body);
+
+    let listed = server
+        .get("/v1/projects", Some(&session_header(&friend)))
+        .await;
+    assert_eq!(listed.status, StatusCode::OK);
+    let slugs: Vec<&str> = listed
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["slug"].as_str().unwrap())
+        .collect();
+    assert!(
+        slugs.contains(&"krypton"),
+        "any signed-in account sees a public project: {slugs:?}"
+    );
+    assert_eq!(
+        server
+            .get(
+                "/v1/projects/krypton/resources",
+                Some(&session_header(&friend)),
+            )
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        server
+            .get("/v1/projects/krypton/resources", None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED,
+        "public is not the open internet"
+    );
 }
 
 #[tokio::test]
@@ -1699,19 +1758,29 @@ async fn the_nav_reflects_who_is_reading() {
     let server = Server::start();
     let session = server.register_first().await;
 
-    let (_, anonymous) = server.get_html("/", None).await;
+    let (anon_home, _) = server.get_html("/", None).await;
+    assert_eq!(
+        anon_home,
+        StatusCode::SEE_OTHER,
+        "the app is not readable without a session"
+    );
+    let (anon_projects, _) = server.get_html("/projects", None).await;
+    assert_eq!(anon_projects, StatusCode::SEE_OTHER);
+
+    let (status, login) = server.get_html("/login", None).await;
+    assert_eq!(status, StatusCode::OK);
     assert!(
-        anonymous.contains("<a href=\"/login\">sign in</a>"),
-        "an anonymous reader needs the way in: {anonymous}"
+        login.contains("<a href=\"/login\">sign in</a>"),
+        "an anonymous reader needs the way in: {login}"
     );
     assert!(
-        !anonymous.contains("/settings/tokens"),
-        "the tokens link only bounces an anonymous reader back: {anonymous}"
+        !login.contains("/settings/tokens"),
+        "the tokens link only bounces an anonymous reader back: {login}"
     );
-    assert!(!anonymous.contains("sign out"), "{anonymous}");
+    assert!(!login.contains("sign out"), "{login}");
 
     // Every page carries the same chrome, so check one of each shape.
-    for path in ["/", "/login", "/settings/tokens"] {
+    for path in ["/", "/login", "/settings/tokens", "/admin"] {
         let (status, html) = server.get_html(path, Some(&session)).await;
         assert_eq!(status, StatusCode::OK, "{path}");
         assert!(
@@ -1727,6 +1796,10 @@ async fn the_nav_reflects_who_is_reading() {
         assert!(
             html.contains("class=\"top__who\">wk<"),
             "{path} does not say which account is signed in: {html}"
+        );
+        assert!(
+            html.contains("href=\"/admin\""),
+            "{path} hides admin from the first account: {html}"
         );
     }
 }
@@ -1754,8 +1827,12 @@ async fn the_browse_ui_can_sign_out() {
             .status,
         StatusCode::UNAUTHORIZED
     );
-    let (_, html) = server.get_html("/", Some(&session)).await;
-    assert!(html.contains("<a href=\"/login\">sign in</a>"), "{html}");
+    let (status, _) = server.get_html("/", Some(&session)).await;
+    assert_eq!(
+        status,
+        StatusCode::SEE_OTHER,
+        "a dead session is sent to sign in, not shown an empty feed"
+    );
 }
 
 /// A private page decides authentication on the server. `/settings/tokens` used
@@ -2220,9 +2297,10 @@ async fn the_feed_shows_each_caller_only_what_they_may_see() {
     );
 
     let anonymous = server.get("/v1/activity", None).await;
-    assert!(
-        anonymous.body["events"].as_array().unwrap().is_empty(),
-        "nothing here is public: {:?}",
+    assert_eq!(
+        anonymous.status,
+        StatusCode::UNAUTHORIZED,
+        "the feed is not an anonymous surface: {:?}",
         anonymous.body
     );
 
@@ -2759,7 +2837,7 @@ async fn usage_is_not_readable_without_access_to_the_project() {
         .await;
 
     let anon = server.get("/v1/projects/p.one/usage", None).await;
-    assert_eq!(anon.status, StatusCode::NOT_FOUND, "{:?}", anon.body);
+    assert_eq!(anon.status, StatusCode::UNAUTHORIZED, "{:?}", anon.body);
 }
 
 /// A write token must not be able to read the ledger back unless it was also
@@ -3004,4 +3082,269 @@ async fn an_empty_usage_range_explains_itself() {
         html.contains("usage_log"),
         "the empty state must name what produces rows: {html}"
     );
+}
+
+// ---------------------------------------------------------- administration
+
+async fn register_invited(server: &Server, admin_session: &str, email: &str) -> (String, String) {
+    let invite = server
+        .post(
+            "/v1/invites",
+            Some(&session_header(admin_session)),
+            json!({}),
+        )
+        .await;
+    assert_eq!(invite.status, StatusCode::OK, "{:?}", invite.body);
+    let joined = server
+        .post(
+            "/v1/auth/register",
+            None,
+            json!({
+                "email": email,
+                "password": "a sufficiently long one",
+                "invite": invite.s("code"),
+            }),
+        )
+        .await;
+    assert_eq!(joined.status, StatusCode::CREATED, "{:?}", joined.body);
+    (cookie_value(&joined), joined.s("id"))
+}
+
+/// The admin roster, project list, and invite ledger are session-only and
+/// admin-only. A token minted by the same admin must not see them.
+#[tokio::test]
+async fn admin_routes_require_an_admin_session() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(
+            &session,
+            json!(["resource:read", "resource:write", "project:admin"]),
+        )
+        .await;
+    let (friend, _) = register_invited(&server, &session, "friend@example.com").await;
+
+    for path in ["/v1/admin/users", "/v1/admin/projects", "/v1/admin/invites"] {
+        let anon = server.get(path, None).await;
+        assert_eq!(anon.status, StatusCode::UNAUTHORIZED, "{path}");
+
+        let via_token = server.get(path, Some(&token)).await;
+        assert_eq!(via_token.status, StatusCode::FORBIDDEN, "{path}");
+        assert_eq!(via_token.s("error"), "session_required", "{path}");
+
+        let member = server.get(path, Some(&session_header(&friend))).await;
+        assert_eq!(member.status, StatusCode::FORBIDDEN, "{path}");
+        assert_eq!(member.s("error"), "admin_required", "{path}");
+
+        let admin = server.get(path, Some(&session_header(&session))).await;
+        assert_eq!(admin.status, StatusCode::OK, "{path}: {:?}", admin.body);
+        assert!(admin.body.as_array().is_some(), "{path} returns a list");
+    }
+}
+
+#[tokio::test]
+async fn an_admin_lists_every_user_and_cannot_disable_themselves() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let (friend_session, friend_id) =
+        register_invited(&server, &session, "friend@example.com").await;
+
+    let users = server
+        .get("/v1/admin/users", Some(&session_header(&session)))
+        .await;
+    assert_eq!(users.status, StatusCode::OK);
+    let rows = users.body.as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{:?}", users.body);
+    assert!(
+        rows.iter()
+            .any(|u| u["email"] == "wk@example.com" && u["is_admin"] == true),
+        "{:?}",
+        users.body
+    );
+    assert!(
+        rows.iter()
+            .any(|u| u["email"] == "friend@example.com" && u["is_admin"] == false),
+        "{:?}",
+        users.body
+    );
+
+    let me = server.get("/v1/me", Some(&session_header(&session))).await;
+    let my_id = me.body["user"]["id"].as_str().unwrap();
+    let self_disable = server
+        .patch(
+            &format!("/v1/admin/users/{my_id}"),
+            Some(&session_header(&session)),
+            json!({ "disabled": true }),
+        )
+        .await;
+    assert_eq!(self_disable.status, StatusCode::FORBIDDEN);
+    assert_eq!(self_disable.s("error"), "cannot_disable_self");
+
+    let disabled = server
+        .patch(
+            &format!("/v1/admin/users/{friend_id}"),
+            Some(&session_header(&session)),
+            json!({ "disabled": true }),
+        )
+        .await;
+    assert_eq!(disabled.status, StatusCode::OK, "{:?}", disabled.body);
+    assert!(disabled.body["disabled_at"].as_i64().is_some());
+
+    // Their session is gone, login is refused, and an old cookie is dead.
+    assert_eq!(
+        server
+            .get("/v1/me", Some(&session_header(&friend_session)))
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    let login = server
+        .post(
+            "/v1/auth/login",
+            None,
+            json!({ "email": "friend@example.com", "password": "a sufficiently long one" }),
+        )
+        .await;
+    assert_eq!(login.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(login.s("error"), "account_disabled");
+
+    let enabled = server
+        .patch(
+            &format!("/v1/admin/users/{friend_id}"),
+            Some(&session_header(&session)),
+            json!({ "disabled": false }),
+        )
+        .await;
+    assert_eq!(enabled.status, StatusCode::OK);
+    assert!(enabled.body["disabled_at"].is_null());
+    let back = server
+        .post(
+            "/v1/auth/login",
+            None,
+            json!({ "email": "friend@example.com", "password": "a sufficiently long one" }),
+        )
+        .await;
+    assert_eq!(back.status, StatusCode::OK, "{:?}", back.body);
+}
+
+/// Visibility has no other write path. Making a project public is what lets
+/// any signed-in account see it; making it private hides it from everyone
+/// except the owner (and an admin session).
+#[tokio::test]
+async fn an_admin_can_toggle_any_projects_visibility() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let (friend_session, _) = register_invited(&server, &session, "friend@example.com").await;
+    let friend_token = server
+        .mint_token(&friend_session, json!(["resource:write", "resource:read"]))
+        .await;
+    let created = server
+        .post(
+            "/v1/projects/friends.notes/resources:inline",
+            Some(&friend_token),
+            json!({
+                "kind": "doc",
+                "slug": "notes",
+                "title": "notes",
+                "contents": [],
+            }),
+        )
+        .await;
+    assert!(created.status.is_success(), "{:?}", created.body);
+
+    let listed = server
+        .get("/v1/admin/projects", Some(&session_header(&session)))
+        .await;
+    assert_eq!(listed.status, StatusCode::OK);
+    let rows = listed.body.as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["slug"], "friends.notes");
+    assert_eq!(rows[0]["is_public"], false);
+    assert_eq!(rows[0]["owner"]["email"], "friend@example.com");
+
+    // Admin session can open someone else's private project; their token cannot.
+    let admin_read = server
+        .get(
+            "/v1/projects/friends.notes/resources",
+            Some(&session_header(&session)),
+        )
+        .await;
+    assert_eq!(admin_read.status, StatusCode::OK, "{:?}", admin_read.body);
+    let admin_token = server.mint_token(&session, json!(["resource:read"])).await;
+    let token_read = server
+        .get("/v1/projects/friends.notes/resources", Some(&admin_token))
+        .await;
+    assert_eq!(token_read.status, StatusCode::NOT_FOUND);
+
+    let opened = server
+        .patch(
+            "/v1/admin/projects/friends.notes",
+            Some(&session_header(&session)),
+            json!({ "is_public": true }),
+        )
+        .await;
+    assert_eq!(opened.status, StatusCode::OK, "{:?}", opened.body);
+    assert_eq!(opened.body["is_public"], true);
+
+    assert_eq!(
+        server
+            .get("/v1/projects/friends.notes/resources", None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED,
+        "public still requires a login"
+    );
+
+    let closed = server
+        .patch(
+            "/v1/admin/projects/friends.notes",
+            Some(&session_header(&session)),
+            json!({ "is_public": false }),
+        )
+        .await;
+    assert_eq!(closed.status, StatusCode::OK);
+    assert_eq!(
+        server
+            .get("/v1/projects/friends.notes/resources", None)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn the_admin_page_is_only_for_an_admin_session() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let (friend, _) = register_invited(&server, &session, "friend@example.com").await;
+
+    let (anon, _) = server.get_html("/admin", None).await;
+    assert_eq!(anon, StatusCode::SEE_OTHER);
+
+    let (member, _) = server.get_html("/admin", Some(&friend)).await;
+    assert_eq!(member, StatusCode::NOT_FOUND);
+    let (_, member_home) = server.get_html("/", Some(&friend)).await;
+    assert!(
+        !member_home.contains("href=\"/admin\""),
+        "a member must not see the admin link: {member_home}"
+    );
+
+    let (status, html) = server.get_html("/admin", Some(&session)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("administration"), "{html}");
+    assert!(html.contains("admin.js"), "{html}");
+
+    let invites = server
+        .get("/v1/admin/invites", Some(&session_header(&session)))
+        .await;
+    assert_eq!(invites.status, StatusCode::OK);
+    let rows = invites.body.as_array().unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "the invite that admitted the friend: {:?}",
+        invites.body
+    );
+    assert!(rows[0]["used_at"].as_i64().is_some());
+    assert_eq!(rows[0]["used_by"]["email"], "friend@example.com");
 }
