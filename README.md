@@ -152,7 +152,7 @@ docker run -d --name xenon -p 8787:8787 \
 
 Put your own reverse proxy in front of `:8787` before exposing this to the
 internet. Release images are also tagged with the exact version and minor
-series, for example `0.1.6` and `0.1`. Pin an exact version instead of
+series, for example `0.1.7` and `0.1`. Pin an exact version instead of
 `latest` when repeatable deployments matter. To build locally instead, run
 `docker build -t xenon .` and use `xenon` as the image name above.
 
