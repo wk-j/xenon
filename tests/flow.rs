@@ -1898,6 +1898,92 @@ async fn the_browse_ui_can_switch_theme() {
     assert!(home.contains("name=\"next\" value=\"/\""), "{home}");
 }
 
+/// A page that lists items can be read as cards or as rows. Like the theme, the
+/// choice is a cookie, so it is made once and holds on every list page — and it
+/// changes the layout only: the same items, with the same text, either way.
+#[tokio::test]
+async fn the_browse_ui_can_switch_between_card_and_list_mode() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server.mint_token(&session, json!(["resource:write"])).await;
+    let res = server
+        .post(
+            "/v1/projects/krypton/resources:inline",
+            Some(&token),
+            json!({
+                "kind": "doc",
+                "slug": "notes",
+                "title": "Release notes",
+                "contents": [{
+                    "path": "notes.md",
+                    "content_base64": data_encoding::BASE64.encode(b"# notes\n"),
+                    "content_type": "text/markdown",
+                }],
+            }),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::CREATED, "{:?}", res.body);
+
+    // Cards is what an unset cookie paints, on both list pages.
+    for path in ["/projects", "/p/krypton"] {
+        let (status, html) = server.get_html(path, Some(&session)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            html.contains("action=\"/view\""),
+            "{path} has a list but no display-mode switch: {html}"
+        );
+        assert!(
+            html.contains(&format!("name=\"next\" value=\"{path}\"")),
+            "{path} must say where to return; Referer is stripped: {html}"
+        );
+        assert!(
+            html.contains("class=\"grid\""),
+            "{path} should start in card mode: {html}"
+        );
+        assert!(html.contains("value=\"card\" class=\"on\""), "{html}");
+    }
+
+    let (status, location, cookie) = server
+        .post_web_form("/view", None, "view=list&next=/projects")
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(location, "/projects");
+    assert!(
+        cookie.contains("xenon_view=list") && cookie.contains("HttpOnly"),
+        "the mode must be a real cookie, not just a query: {cookie}"
+    );
+
+    let signed_in_list = format!("xenon_session={session}; xenon_view=list");
+    for (path, item) in [("/projects", "krypton"), ("/p/krypton", "Release notes")] {
+        let (status, html) = server.get_html_cookie(path, Some(&signed_in_list)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            html.contains("class=\"grid grid--list\""),
+            "{path} ignored the cookie: {html}"
+        );
+        assert!(html.contains("value=\"list\" class=\"on\""), "{html}");
+        assert!(!html.contains("value=\"card\" class=\"on\""), "{html}");
+        assert!(
+            html.contains(item),
+            "list mode must not drop what the cards showed: {html}"
+        );
+    }
+
+    let (status, location, cookie) = server
+        .post_web_form(
+            "/view",
+            Some("xenon_view=list"),
+            "view=table&next=/projects",
+        )
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(location, "/projects");
+    assert!(
+        cookie.is_empty(),
+        "a junk mode must not mint or overwrite a cookie: {cookie}"
+    );
+}
+
 /// Signing out from the browse UI ends the session and lands on a page, not on
 /// the JSON body that `/v1/auth/logout` answers with.
 #[tokio::test]

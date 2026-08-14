@@ -66,6 +66,85 @@ header.top nav button:hover{color:var(--accent);text-decoration:underline}
 header.top nav form.theme{display:flex;gap:10px}
 header.top nav .theme button.on{color:var(--fg)}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+/* Display mode for a page that lists items. The switch is a page control, not
+   chrome, so it sits on the row above the list it changes — right-aligned,
+   where a reader's eye lands after the filters and before the content. It
+   reads in the nav's quiet voice rather than as a filled button: it changes
+   how the page looks, not what it shows, and does not deserve the accent. */
+.listbar{display:flex;align-items:baseline;justify-content:flex-end;gap:10px;margin:0 0 10px}
+.viewswitch{display:flex;align-items:baseline;gap:10px;margin:0;font:11px/1 var(--mono);
+letter-spacing:.04em}
+.viewswitch__label{color:var(--muted)}
+.viewswitch button{background:none;border:0;padding:0;color:var(--muted);font:inherit;
+letter-spacing:inherit;cursor:pointer}
+.viewswitch button:hover{color:var(--accent);text-decoration:underline}
+.viewswitch button.on{color:var(--fg)}
+/* List mode. Identical markup to the cards — a row is the same card with its
+   box taken away — so the two modes cannot drift and a field added to one
+   appears in the other. Rules instead of borders, and the meta line moves to
+   the end of the row, which is what buys the density: a long project fits on
+   one screen instead of three. */
+.grid--list{display:flex;flex-direction:column;gap:0}
+.grid--list .card{display:flex;align-items:baseline;gap:5px 14px;
+background:none;border:0;border-radius:0;border-top:1px solid var(--border);padding:8px 2px}
+.grid--list .card:last-child{border-bottom:1px solid var(--border)}
+/* Two columns that SHRINK rather than wrap. A row whose meta is pushed onto a
+   second line puts the kind chip in the middle of empty space, reading as a
+   stray label rather than as the tail of the line above it — which is exactly
+   what a fixed 50% title column produced as soon as a slug got long. So the
+   two columns share the row by shrinking: each wraps its own text inside its
+   own column, the meta stays anchored to the right edge of the first line, and
+   no title is truncated — these are Thai sentences as often as they are slugs,
+   and an ellipsis would eat the part that identifies the item. */
+.grid--list .card h3{flex:1 1 auto;margin:0;min-width:0;overflow-wrap:anywhere}
+.grid--list .card .meta{flex:0 0 auto;margin-left:auto;text-align:right}
+/* A resource row has one categorical field — its kind — and a tail whose width
+   changes with the slug. With the chip riding inside that right-aligned tail it
+   landed at a different x on every row, so the one column worth scanning down
+   was the one that never lined up. `display:contents` drops the meta's own box
+   so the chip and the tail become columns of the ROW instead, letting the kind
+   sit in a fixed column at the left: the same answer, and the same reason, as
+   the feed's fixed kind column. The markup is untouched in card mode, where
+   `.meta` is still an ordinary line under the title. */
+.grid--list .card--res .meta{display:contents}
+/* One width for every chip, not a floor: with `min-width` the five kinds still
+   ended at five different x, so the titles beside them did too. 8.4em clears
+   the longest kind there is (`attention`) at the chip's own 10px. */
+.grid--list .card--res .pill.k{order:-1;flex:0 0 8.4em;text-align:center}
+/* Only the title gives ground when a row runs out of width. It is prose, so it
+   wraps without looking damaged, where both fields to its right read as broken
+   the moment they do: "· 2 rev · updated 4 d ago" is one phrase, and a slug cut
+   mid-path stops looking like an address. So neither shrinks — the slug is
+   bounded by `max-width` instead, which is what keeps a 70-character doc path
+   from eating the row it annotates while every ordinary slug stays on one line
+   (letting it shrink even a little wrapped 35 of 45 rows here). */
+.grid--list .card--res .meta__slug{order:1;flex:0 0 auto;min-width:0;max-width:40ch;
+margin-left:auto;overflow-wrap:anywhere;text-align:right}
+.grid--list .card--res .meta__rest{order:2;flex:0 0 auto;white-space:nowrap}
+/* The project row keeps its monogram, at the size of a line rather than a
+   tile, so identity survives the denser layout. */
+.grid--list .card--project{align-items:center;gap:9px}
+.grid--list .card--project .logo{width:22px;height:22px;border-radius:6px;font-size:11px}
+.grid--list .card__body{display:flex;align-items:baseline;gap:5px 14px;flex:1;min-width:0}
+/* Two columns need a row wide enough to hold both. Below that the row becomes
+   a stack — meta under its title and left-aligned, where a right edge 40
+   characters away would only look detached again. The threshold is wider than
+   the feed's 640px because the meta here is a long fixed phrase: keeping two
+   columns any narrower would squeeze the title to a word per line. */
+@media (max-width:820px){
+  .grid--list .card,.grid--list .card__body{flex-wrap:wrap}
+  .grid--list .card .meta{flex-basis:100%;margin-left:0;text-align:left}
+  /* The chip keeps its place at the head of the row, but a fixed column is
+     only worth the width when there is a column beside it. The title claims
+     the rest of that first line, which sends the slug and its tail onto the
+     next one together rather than one field per line. */
+  .grid--list .card--res .pill.k{min-width:0}
+  .grid--list .card--res h3{flex-basis:calc(100% - 8em)}
+  /* The slug shares that second line with its tail instead of standing in a
+     column beside the title, so the width that bounded the column is now the
+     only thing making it wrap. */
+  .grid--list .card--res .meta__slug{max-width:none;margin-left:0;text-align:left}
+}
 .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:13px}
 .card h3{margin:0 0 6px;font:600 13px/1.3 var(--sans)}
 /* A card title is the content, not an action, so it reads in the text colour

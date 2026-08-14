@@ -156,12 +156,63 @@ mod tests {
             ":root{--bg:",
             "html[data-theme=\"light\"]",
             ".artifact-open",
+            // The list pages emit these two class names from their templates,
+            // so losing the rules would leave the switch styled as a filled
+            // button and "list" laid out exactly like "cards".
+            ".viewswitch",
+            ".grid--list",
             ".rv-finding",
             ".rv-steps",
             ".rv-chart",
             "pre.rv-diff",
         ] {
             assert!(css.contains(needed), "app.css lost `{needed}`");
+        }
+    }
+
+    /// A stylesheet is not compiled, so a comment that closes early is not an
+    /// error anywhere — the browser silently swallows the prose AND the rule
+    /// that follows it, and the page merely looks a little wrong. This file's
+    /// comments carry the design reasoning and run to several lines, which is
+    /// exactly the shape that mistake takes, so pin it: `/*` and `*/` must
+    /// alternate, and every `*/` must close a comment that is open.
+    #[test]
+    fn stylesheet_comments_are_balanced() {
+        let css = ASSETS[index_of("app.css").unwrap()].body;
+        // Byte-wise, not by string slicing: this file is full of em dashes and
+        // the odd Thai word, and a byte index into one of those is not a char
+        // boundary.
+        let b = css.as_bytes();
+        let line_of = |at: usize| b[..at].iter().filter(|&&c| c == b'\n').count() + 1;
+        let mut open: Option<usize> = None;
+        let mut i = 0;
+        while i + 1 < b.len() {
+            match (b[i], b[i + 1], open) {
+                (b'/', b'*', None) => {
+                    open = Some(i);
+                    i += 2;
+                    continue;
+                }
+                (b'*', b'/', Some(_)) => {
+                    open = None;
+                    i += 2;
+                    continue;
+                }
+                (b'*', b'/', None) => panic!(
+                    "app.css line {}: `*/` closes nothing — the comment above ended early, \
+                     and the browser is dropping the prose AND the next rule",
+                    line_of(i)
+                ),
+                // `/*` inside a comment is literal: CSS comments do not nest.
+                _ => {}
+            }
+            i += 1;
+        }
+        if let Some(at) = open {
+            panic!(
+                "app.css: the comment opened on line {} is never closed",
+                line_of(at)
+            );
         }
     }
 

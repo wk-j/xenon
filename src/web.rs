@@ -109,6 +109,11 @@ struct Nav {
     /// can prefer light on a desk and dark on a phone, and the login screen
     /// has to honour it before anyone is signed in.
     theme: Theme,
+    /// Cards or rows, for the pages that list items. A browser cookie for the
+    /// same reason the theme is one: it is how this screen is being read, not
+    /// a fact about the account, and it is chosen on one list page for all of
+    /// them.
+    view: View,
     /// Path and query of the page being drawn. The theme form posts it back
     /// as `next` because every page sends `Referrer-Policy: no-referrer`, so
     /// the browser will not tell us where to return on its own.
@@ -124,7 +129,9 @@ enum Theme {
 }
 
 const THEME_COOKIE: &str = "xenon_theme";
-const THEME_TTL_SECS: i64 = 60 * 60 * 24 * 365;
+const VIEW_COOKIE: &str = "xenon_view";
+/// How long a chrome preference (theme, view mode) rides on this browser.
+const PREF_TTL_SECS: i64 = 60 * 60 * 24 * 365;
 
 impl Theme {
     fn from_cookie(raw: Option<&str>) -> Self {
@@ -173,6 +180,63 @@ impl std::fmt::Display for Theme {
 #[derive(Deserialize)]
 struct ThemeForm {
     theme: String,
+    next: Option<String>,
+}
+
+/// How a page that lists items lays them out. Cards is the default because it
+/// is the shape both list pages were designed in; list trades the boxes for
+/// rows, which fits far more of a long project on one screen.
+///
+/// Both modes render the SAME markup — only the layout class on the container
+/// changes — so the switch can never alter what a page says, and a field added
+/// to a card cannot go missing from a row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum View {
+    Card,
+    List,
+}
+
+impl View {
+    fn from_cookie(raw: Option<&str>) -> Self {
+        match raw {
+            Some("list") => Self::List,
+            _ => Self::Card,
+        }
+    }
+
+    fn from_headers(headers: &HeaderMap) -> Self {
+        Self::from_cookie(auth::read_cookie(headers, VIEW_COOKIE).as_deref())
+    }
+
+    /// Unknown values are refused rather than silently becoming cards, so a
+    /// typo does not overwrite a real choice — same rule as the theme form.
+    fn from_form(raw: &str) -> Option<Self> {
+        match raw {
+            "card" => Some(Self::Card),
+            "list" => Some(Self::List),
+            _ => None,
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Card => "card",
+            Self::List => "list",
+        }
+    }
+
+    fn is_card(&self) -> bool {
+        matches!(self, Self::Card)
+    }
+
+    fn is_list(&self) -> bool {
+        matches!(self, Self::List)
+    }
+}
+
+#[derive(Deserialize)]
+struct ViewForm {
+    view: String,
     next: Option<String>,
 }
 
@@ -730,6 +794,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/login", get(login_page))
         .route("/logout", post(logout))
         .route("/theme", post(set_theme))
+        .route("/view", post(set_view))
         .route("/register", get(register_page))
         .route("/settings/tokens", get(tokens_page))
         .route("/admin", get(admin_page))
@@ -760,6 +825,7 @@ fn viewer(state: &AppState, headers: &HeaderMap, uri: &axum::http::Uri) -> (Opti
     let conn = state.db();
     let actor = auth::authenticate(&conn, headers).ok().flatten();
     let theme = Theme::from_headers(headers);
+    let view = View::from_headers(headers);
     let here = match uri.query() {
         Some(q) => format!("{}?{q}", uri.path()),
         None => uri.path().to_string(),
@@ -773,6 +839,7 @@ fn viewer(state: &AppState, headers: &HeaderMap, uri: &axum::http::Uri) -> (Opti
             who: display_name(&conn, &actor.user_id),
             is_admin: actor.is_admin,
             theme,
+            view,
             here,
         },
         None => Nav {
@@ -780,6 +847,7 @@ fn viewer(state: &AppState, headers: &HeaderMap, uri: &axum::http::Uri) -> (Opti
             who: String::new(),
             is_admin: false,
             theme,
+            view,
             here,
         },
     };
@@ -1914,12 +1982,48 @@ async fn set_theme(
         .into_response()
 }
 
-fn theme_cookie(theme: Theme, insecure: bool) -> String {
-    let secure = if insecure { "" } else { " Secure;" };
-    format!(
-        "{THEME_COOKIE}={}; Path=/; HttpOnly;{secure} SameSite=Lax; Max-Age={THEME_TTL_SECS}",
-        theme.as_str()
+/// Display mode for the pages that list items. Same shape as `set_theme` — a
+/// POST, a refused unknown value, and a same-origin return — because it is the
+/// same kind of thing: a preference this browser holds, carrying nothing an
+/// attacker could want and nothing a crawler should be able to trip.
+async fn set_view(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Form(form): Form<ViewForm>,
+) -> Response {
+    let location = return_path(form.next.as_deref(), &headers);
+    let Some(view) = View::from_form(&form.view) else {
+        return (StatusCode::SEE_OTHER, [(header::LOCATION, location)], ()).into_response();
+    };
+    (
+        StatusCode::SEE_OTHER,
+        [
+            (
+                header::SET_COOKIE,
+                view_cookie(view, state.config.insecure_cookies),
+            ),
+            (header::LOCATION, location),
+        ],
+        (),
     )
+        .into_response()
+}
+
+fn theme_cookie(theme: Theme, insecure: bool) -> String {
+    pref_cookie(THEME_COOKIE, theme.as_str(), insecure)
+}
+
+fn view_cookie(view: View, insecure: bool) -> String {
+    pref_cookie(VIEW_COOKIE, view.as_str(), insecure)
+}
+
+/// One recipe for every chrome preference cookie, so a second one cannot end up
+/// with weaker flags than the first. `HttpOnly` because no page script reads
+/// these, and `SameSite=Lax` so a cross-site form can at worst change how this
+/// browser paints a page it was already allowed to see.
+fn pref_cookie(name: &str, value: &str, insecure: bool) -> String {
+    let secure = if insecure { "" } else { " Secure;" };
+    format!("{name}={value}; Path=/; HttpOnly;{secure} SameSite=Lax; Max-Age={PREF_TTL_SECS}")
 }
 
 /// Where to send the reader after a chrome form. Prefer `next` from the form
@@ -2022,6 +2126,30 @@ mod tests {
         assert!(secure.contains("Secure"), "{secure}");
         assert!(secure.contains("SameSite=Lax"), "{secure}");
         assert!(!theme_cookie(Theme::Dark, true).contains("Secure"));
+    }
+
+    #[test]
+    fn view_cookie_only_accepts_the_two_modes() {
+        assert_eq!(View::from_cookie(None), View::Card);
+        assert_eq!(View::from_cookie(Some("card")), View::Card);
+        assert_eq!(View::from_cookie(Some("list")), View::List);
+        assert_eq!(View::from_cookie(Some("table")), View::Card);
+        assert_eq!(View::from_form("card"), Some(View::Card));
+        assert_eq!(View::from_form("list"), Some(View::List));
+        assert_eq!(View::from_form("table"), None);
+    }
+
+    /// Both preference cookies come off `pref_cookie`, so guard the flags on the
+    /// newer one too: a second cookie minted by hand is how one ends up without
+    /// `HttpOnly`.
+    #[test]
+    fn view_cookie_matches_the_theme_cookie_flags() {
+        let secure = view_cookie(View::List, false);
+        assert!(secure.contains("xenon_view=list"), "{secure}");
+        assert!(secure.contains("HttpOnly"), "{secure}");
+        assert!(secure.contains("Secure"), "{secure}");
+        assert!(secure.contains("SameSite=Lax"), "{secure}");
+        assert!(!view_cookie(View::Card, true).contains("Secure"));
     }
 
     #[test]

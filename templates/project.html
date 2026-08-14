@@ -45,14 +45,19 @@
   {%- endif -%}
 </p>
 {% else %}
-<div class="grid">
+{% include "viewswitch.html" %}
+<div class="grid{% if nav.view.is_list() %} grid--list{% endif %}">
   {%- for r in resources %}
-  <div class="card">
+  {#- The kind chip and the rest of the meta line are separate elements so list
+      mode can make the chip a column of the ROW — see `.card--res` in app.css.
+      The text between them is unchanged, so a card renders exactly as before. -#}
+  <div class="card card--res">
     <h3><a href="/r/{{ project }}/{{ r.kind }}/{{ r.slug }}">{{ r.title }}</a></h3>
     <div class="meta">
       <span class="pill k k--{{ r.kind }}">{{ r.kind }}</span>
-      {{ r.slug }} · {{ r.revisions }} rev ·
-      updated <time title="{{ r.updated_exact }}">{{ r.updated }}</time>
+      <span class="meta__slug">{{ r.slug }}</span>
+      <span class="meta__rest">· {{ r.revisions }} rev ·
+      updated <time title="{{ r.updated_exact }}">{{ r.updated }}</time></span>
     </div>
   </div>
   {%- endfor %}

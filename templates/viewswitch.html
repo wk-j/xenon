@@ -1,0 +1,21 @@
+{#- The display-mode switch for a page that lists items, included by every such
+    page so the control exists once.
+
+    It sits with the list it controls rather than in the chrome beside the theme
+    switch: on a resource page or the sign-in form there is nothing to lay out,
+    and a control that does nothing where it appears teaches the reader to stop
+    looking at it. The cookie is shared, so choosing rows here is rows on every
+    list page.
+
+    Same shape as the theme form — a POST with two named submit buttons and the
+    return path in a hidden field — so it works without JavaScript and the value
+    posted is the mode that was clicked, never a hidden field that has drifted
+    from its label. -#}
+<div class="listbar">
+  <form method="post" action="/view" class="viewswitch">
+    <input type="hidden" name="next" value="{{ nav.here }}">
+    <span class="viewswitch__label" aria-hidden="true">view</span>
+    <button type="submit" name="view" value="card"{% if nav.view.is_card() %} class="on" aria-pressed="true"{% else %} aria-pressed="false"{% endif %}>cards</button>
+    <button type="submit" name="view" value="list"{% if nav.view.is_list() %} class="on" aria-pressed="true"{% else %} aria-pressed="false"{% endif %}>list</button>
+  </form>
+</div>

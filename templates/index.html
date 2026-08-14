@@ -6,7 +6,8 @@
   no projects yet — push one from krypton with #push
 </p>
 {% else %}
-<div class="grid">
+{% include "viewswitch.html" %}
+<div class="grid{% if nav.view.is_list() %} grid--list{% endif %}">
   {% for p in projects %}
   <div class="card card--project">
     {#- The logo is the name again, so it says nothing a screen reader needs. -#}
