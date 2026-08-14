@@ -5,7 +5,7 @@
 // the server. House rules that apply: data is mono / prose is sans, no nested
 // cards, no left-accent rails, and paths keep their own case.
 
-use axum::extract::{Path, Query, RawQuery, State};
+use axum::extract::{Form, Path, Query, RawQuery, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -105,6 +105,75 @@ struct Nav {
     who: String,
     /// The admin link is instance-wide; only the first account sees it.
     is_admin: bool,
+    /// Dark or light. A browser cookie, not an account field: the same person
+    /// can prefer light on a desk and dark on a phone, and the login screen
+    /// has to honour it before anyone is signed in.
+    theme: Theme,
+    /// Path and query of the page being drawn. The theme form posts it back
+    /// as `next` because every page sends `Referrer-Policy: no-referrer`, so
+    /// the browser will not tell us where to return on its own.
+    here: String,
+}
+
+/// The two modes the browse UI can paint. Anything else in the cookie is
+/// treated as dark, which is the identity the pages were designed in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Theme {
+    Dark,
+    Light,
+}
+
+const THEME_COOKIE: &str = "xenon_theme";
+const THEME_TTL_SECS: i64 = 60 * 60 * 24 * 365;
+
+impl Theme {
+    fn from_cookie(raw: Option<&str>) -> Self {
+        match raw {
+            Some("light") => Self::Light,
+            _ => Self::Dark,
+        }
+    }
+
+    fn from_headers(headers: &HeaderMap) -> Self {
+        Self::from_cookie(auth::read_cookie(headers, THEME_COOKIE).as_deref())
+    }
+
+    /// A form post names a mode. Unknown values are refused rather than
+    /// silently becoming dark, so a typo does not overwrite a real choice.
+    fn from_form(raw: &str) -> Option<Self> {
+        match raw {
+            "dark" => Some(Self::Dark),
+            "light" => Some(Self::Light),
+            _ => None,
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Dark => "dark",
+            Self::Light => "light",
+        }
+    }
+
+    fn is_dark(&self) -> bool {
+        matches!(self, Self::Dark)
+    }
+
+    fn is_light(&self) -> bool {
+        matches!(self, Self::Light)
+    }
+}
+
+impl std::fmt::Display for Theme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Deserialize)]
+struct ThemeForm {
+    theme: String,
+    next: Option<String>,
 }
 
 #[derive(askama::Template)]
@@ -471,10 +540,11 @@ pub struct UsageQuery {
 async fn usage_page(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    uri: axum::http::Uri,
     Path(project): Path<String>,
     Query(query): Query<UsageQuery>,
 ) -> AppResult<Response> {
-    let (actor, nav) = viewer(&state, &headers);
+    let (actor, nav) = viewer(&state, &headers, &uri);
     if !has_browser_session(&actor) {
         return Ok(redirect_to_login());
     }
@@ -659,6 +729,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/activity", get(activity_moved))
         .route("/login", get(login_page))
         .route("/logout", post(logout))
+        .route("/theme", post(set_theme))
         .route("/register", get(register_page))
         .route("/settings/tokens", get(tokens_page))
         .route("/admin", get(admin_page))
@@ -685,9 +756,14 @@ pub fn escape(raw: &str) -> String {
 /// Authenticate once for both the page body and its chrome. One call, one lock:
 /// `AppState::db()` is a plain mutex, so a second nested `db()` inside a handler
 /// that already holds the guard would deadlock rather than fail.
-fn viewer(state: &AppState, headers: &HeaderMap) -> (Option<Actor>, Nav) {
+fn viewer(state: &AppState, headers: &HeaderMap, uri: &axum::http::Uri) -> (Option<Actor>, Nav) {
     let conn = state.db();
     let actor = auth::authenticate(&conn, headers).ok().flatten();
+    let theme = Theme::from_headers(headers);
+    let here = match uri.query() {
+        Some(q) => format!("{}?{q}", uri.path()),
+        None => uri.path().to_string(),
+    };
     // Only a session gets a signed-in nav. A bearer token is a machine
     // credential — there is no browser session behind it to sign out of, and it
     // reaches these pages only when someone is driving them with curl.
@@ -696,11 +772,15 @@ fn viewer(state: &AppState, headers: &HeaderMap) -> (Option<Actor>, Nav) {
             signed_in: true,
             who: display_name(&conn, &actor.user_id),
             is_admin: actor.is_admin,
+            theme,
+            here,
         },
         None => Nav {
             signed_in: false,
             who: String::new(),
             is_admin: false,
+            theme,
+            here,
         },
     };
     (actor, nav)
@@ -723,8 +803,12 @@ fn display_name(conn: &Connection, user_id: &str) -> String {
 
 // ------------------------------------------------------------------- pages
 
-async fn index(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AppResult<Response> {
-    let (actor, nav) = viewer(&state, &headers);
+async fn index(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+) -> AppResult<Response> {
+    let (actor, nav) = viewer(&state, &headers, &uri);
     if !has_browser_session(&actor) {
         return Ok(redirect_to_login());
     }
@@ -800,9 +884,10 @@ async fn activity_moved(RawQuery(query): RawQuery) -> Redirect {
 async fn activity_page(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    uri: axum::http::Uri,
     Query(query): Query<ActivityPageQuery>,
 ) -> AppResult<Response> {
-    let (actor, nav) = viewer(&state, &headers);
+    let (actor, nav) = viewer(&state, &headers, &uri);
     if !has_browser_session(&actor) {
         return Ok(redirect_to_login());
     }
@@ -944,10 +1029,11 @@ pub struct ProjectQuery {
 async fn project_page(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    uri: axum::http::Uri,
     Path(project): Path<String>,
     Query(query): Query<ProjectQuery>,
 ) -> AppResult<Response> {
-    let (actor, nav) = viewer(&state, &headers);
+    let (actor, nav) = viewer(&state, &headers, &uri);
     if !has_browser_session(&actor) {
         return Ok(redirect_to_login());
     }
@@ -1047,6 +1133,7 @@ pub struct ResourceQuery {
 async fn resource_page(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    uri: axum::http::Uri,
     Path((project, kind, raw_slug)): Path<(String, String, String)>,
     Query(query): Query<ResourceQuery>,
 ) -> AppResult<Response> {
@@ -1061,7 +1148,7 @@ async fn resource_page(
         None => (raw_slug.clone(), None),
     };
 
-    let (actor, nav) = viewer(&state, &headers);
+    let (actor, nav) = viewer(&state, &headers, &uri);
     if !has_browser_session(&actor) {
         return Ok(redirect_to_login());
     }
@@ -1716,8 +1803,9 @@ fn urlencode(raw: &str) -> String {
 async fn login_page(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    uri: axum::http::Uri,
 ) -> AppResult<Html<String>> {
-    let (_, nav) = viewer(&state, &headers);
+    let (_, nav) = viewer(&state, &headers, &uri);
     let (title, css_url, app_js_url) = chrome("sign in");
     render(&LoginTemplate {
         title,
@@ -1732,8 +1820,9 @@ async fn login_page(
 async fn register_page(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    uri: axum::http::Uri,
 ) -> AppResult<Html<String>> {
-    let (_, nav) = viewer(&state, &headers);
+    let (_, nav) = viewer(&state, &headers, &uri);
     let (title, css_url, app_js_url) = chrome("register");
     render(&RegisterTemplate {
         title,
@@ -1748,8 +1837,9 @@ async fn register_page(
 async fn tokens_page(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    uri: axum::http::Uri,
 ) -> AppResult<Response> {
-    let (actor, nav) = viewer(&state, &headers);
+    let (actor, nav) = viewer(&state, &headers, &uri);
     // The page is a shell that `tokens.js` fills from `/v1/tokens`; without a
     // session that fetch 401s and the script sends the reader here anyway.
     // Deciding it server-side means no empty token table flashes first, and it
@@ -1769,8 +1859,12 @@ async fn tokens_page(
     .into_response())
 }
 
-async fn admin_page(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AppResult<Response> {
-    let (actor, nav) = viewer(&state, &headers);
+async fn admin_page(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+) -> AppResult<Response> {
+    let (actor, nav) = viewer(&state, &headers, &uri);
     if !actor.as_ref().is_some_and(|a| a.is_session()) {
         return Ok(redirect_to_login());
     }
@@ -1790,6 +1884,80 @@ async fn admin_page(State(state): State<Arc<AppState>>, headers: HeaderMap) -> A
         nav,
     })?
     .into_response())
+}
+
+/// Theme for the browser. A POST, like sign-out: a GET would be cacheable and
+/// a link a crawler could follow, and neither should paint the next reader's
+/// page. The cookie is a preference, not a credential — `HttpOnly` still, so
+/// page JS cannot be talked into rewriting it, and `SameSite=Lax` so a
+/// cross-site form can at worst flip the colours, not read anything.
+async fn set_theme(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Form(form): Form<ThemeForm>,
+) -> Response {
+    let location = return_path(form.next.as_deref(), &headers);
+    let Some(theme) = Theme::from_form(&form.theme) else {
+        return (StatusCode::SEE_OTHER, [(header::LOCATION, location)], ()).into_response();
+    };
+    (
+        StatusCode::SEE_OTHER,
+        [
+            (
+                header::SET_COOKIE,
+                theme_cookie(theme, state.config.insecure_cookies),
+            ),
+            (header::LOCATION, location),
+        ],
+        (),
+    )
+        .into_response()
+}
+
+fn theme_cookie(theme: Theme, insecure: bool) -> String {
+    let secure = if insecure { "" } else { " Secure;" };
+    format!(
+        "{THEME_COOKIE}={}; Path=/; HttpOnly;{secure} SameSite=Lax; Max-Age={THEME_TTL_SECS}",
+        theme.as_str()
+    )
+}
+
+/// Where to send the reader after a chrome form. Prefer `next` from the form
+/// (every page has `Referrer-Policy: no-referrer`, so the browser will not
+/// send a Referer). Either way only a same-origin path is kept — a crafted
+/// `next` or a cross-site Referer must not send anyone off this host.
+fn return_path(next: Option<&str>, headers: &HeaderMap) -> String {
+    if let Some(path) = next.and_then(safe_return_to) {
+        return path;
+    }
+    let Some(raw) = headers.get(header::REFERER).and_then(|v| v.to_str().ok()) else {
+        return "/".to_string();
+    };
+    let Ok(uri) = raw.parse::<axum::http::Uri>() else {
+        return "/".to_string();
+    };
+    let path = uri.path();
+    if !path.starts_with('/') || path.starts_with("//") {
+        return "/".to_string();
+    }
+    match uri.query() {
+        Some(q) => format!("{path}?{q}"),
+        None => path.to_string(),
+    }
+}
+
+fn safe_return_to(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty()
+        || !raw.starts_with('/')
+        || raw.starts_with("//")
+        || raw.contains("://")
+        || raw.contains('\\')
+        || raw.bytes().any(|b| b < 0x20)
+    {
+        return None;
+    }
+    Some(raw.to_string())
 }
 
 /// Sign-out for the browser. `POST /v1/auth/logout` answers JSON, which is right
@@ -1834,6 +2002,58 @@ fn has_browser_session(actor: &Option<Actor>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn theme_cookie_only_accepts_the_two_modes() {
+        assert_eq!(Theme::from_cookie(None), Theme::Dark);
+        assert_eq!(Theme::from_cookie(Some("dark")), Theme::Dark);
+        assert_eq!(Theme::from_cookie(Some("light")), Theme::Light);
+        assert_eq!(Theme::from_cookie(Some("neon")), Theme::Dark);
+        assert_eq!(Theme::from_form("light"), Some(Theme::Light));
+        assert_eq!(Theme::from_form("dark"), Some(Theme::Dark));
+        assert_eq!(Theme::from_form("neon"), None);
+    }
+
+    #[test]
+    fn theme_cookie_matches_the_session_cookie_flags() {
+        let secure = theme_cookie(Theme::Light, false);
+        assert!(secure.contains("xenon_theme=light"), "{secure}");
+        assert!(secure.contains("HttpOnly"), "{secure}");
+        assert!(secure.contains("Secure"), "{secure}");
+        assert!(secure.contains("SameSite=Lax"), "{secure}");
+        assert!(!theme_cookie(Theme::Dark, true).contains("Secure"));
+    }
+
+    #[test]
+    fn return_path_keeps_only_a_same_host_path() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::REFERER,
+            "https://evil.example/phish".parse().unwrap(),
+        );
+        assert_eq!(return_path(Some("/projects"), &headers), "/projects");
+        assert_eq!(
+            return_path(Some("/?kind=review"), &HeaderMap::new()),
+            "/?kind=review"
+        );
+        // Off-site or broken `next` is dropped; a same-host Referer path is
+        // the fallback, and nothing at all lands on `/`.
+        assert_eq!(
+            return_path(Some("https://evil.example/"), &headers),
+            "/phish"
+        );
+        assert_eq!(
+            return_path(Some("https://evil.example/"), &HeaderMap::new()),
+            "/"
+        );
+        assert_eq!(return_path(Some("//evil.example"), &headers), "/phish");
+        assert_eq!(
+            return_path(Some("/theme\nLocation: https://x"), &headers),
+            "/phish"
+        );
+        assert_eq!(return_path(None, &headers), "/phish");
+        assert_eq!(return_path(None, &HeaderMap::new()), "/");
+    }
 
     #[test]
     fn escape_neutralises_html() {

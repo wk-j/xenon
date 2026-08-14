@@ -91,9 +91,14 @@ impl Server {
     /// A browse-UI page as raw HTML. `send` parses JSON, which an HTML response
     /// is not, so the body has to be read separately here.
     async fn get_html(&self, path: &str, session: Option<&str>) -> (StatusCode, String) {
+        let cookie = session.map(|s| format!("xenon_session={s}"));
+        self.get_html_cookie(path, cookie.as_deref()).await
+    }
+
+    async fn get_html_cookie(&self, path: &str, cookie: Option<&str>) -> (StatusCode, String) {
         let mut req = Request::get(path);
-        if let Some(session) = session {
-            req = req.header(header::COOKIE, format!("xenon_session={session}"));
+        if let Some(cookie) = cookie {
+            req = req.header(header::COOKIE, cookie);
         }
         let response = self
             .app
@@ -129,14 +134,25 @@ impl Server {
     /// A browse-UI form post. Unlike `post`, the interesting parts of the answer
     /// are the redirect target and the cookie it clears, not a JSON body.
     async fn post_web(&self, path: &str, session: Option<&str>) -> (StatusCode, String, String) {
-        let mut req = Request::post(path);
-        if let Some(session) = session {
-            req = req.header(header::COOKIE, format!("xenon_session={session}"));
+        let cookie = session.map(|s| format!("xenon_session={s}"));
+        self.post_web_form(path, cookie.as_deref(), "").await
+    }
+
+    async fn post_web_form(
+        &self,
+        path: &str,
+        cookie: Option<&str>,
+        form: &str,
+    ) -> (StatusCode, String, String) {
+        let mut req =
+            Request::post(path).header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+        if let Some(cookie) = cookie {
+            req = req.header(header::COOKIE, cookie);
         }
         let response = self
             .app
             .clone()
-            .oneshot(req.body(Body::empty()).unwrap())
+            .oneshot(req.body(Body::from(form.to_string())).unwrap())
             .await
             .unwrap();
         let head = |name: header::HeaderName| {
@@ -1802,6 +1818,84 @@ async fn the_nav_reflects_who_is_reading() {
             "{path} hides admin from the first account: {html}"
         );
     }
+}
+
+/// Dark is the default paint; light is a cookie the chrome form sets, and the
+/// next page is drawn in that mode without a flash of the other.
+#[tokio::test]
+async fn the_browse_ui_can_switch_theme() {
+    let server = Server::start();
+
+    let (status, login) = server.get_html("/login", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        login.contains("data-theme=\"dark\""),
+        "unset cookie is dark: {login}"
+    );
+    assert!(
+        login.contains("action=\"/theme\""),
+        "the switch has to live on every page, including sign-in: {login}"
+    );
+    assert!(
+        login.contains("name=\"next\" value=\"/login\""),
+        "the form must say where to return; Referer is stripped: {login}"
+    );
+    assert!(
+        login.contains("value=\"dark\" class=\"on\""),
+        "the current mode is the one marked on: {login}"
+    );
+
+    let (status, location, cookie) = server
+        .post_web_form("/theme", None, "theme=light&next=/login")
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(location, "/login");
+    assert!(
+        cookie.contains("xenon_theme=light") && cookie.contains("HttpOnly"),
+        "light must be a real cookie, not just a query: {cookie}"
+    );
+
+    let (status, login) = server
+        .get_html_cookie("/login", Some("xenon_theme=light"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        login.contains("data-theme=\"light\""),
+        "the cookie has to paint the page, not just sit there: {login}"
+    );
+    assert!(login.contains("value=\"light\" class=\"on\""), "{login}");
+    assert!(!login.contains("value=\"dark\" class=\"on\""), "{login}");
+
+    let (status, location, cookie) = server
+        .post_web_form(
+            "/theme",
+            Some("xenon_theme=light"),
+            "theme=neon&next=/login",
+        )
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(location, "/login");
+    assert!(
+        cookie.is_empty(),
+        "a junk value must not mint or overwrite a cookie: {cookie}"
+    );
+
+    let (status, location, _) = server
+        .post_web_form("/theme", None, "theme=dark&next=https://evil.example/")
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(location, "/");
+
+    let session = server.register_first().await;
+    let (status, home) = server
+        .get_html_cookie(
+            "/",
+            Some(&format!("xenon_session={session}; xenon_theme=light")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(home.contains("data-theme=\"light\""), "{home}");
+    assert!(home.contains("name=\"next\" value=\"/\""), "{home}");
 }
 
 /// Signing out from the browse UI ends the session and lands on a page, not on

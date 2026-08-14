@@ -292,6 +292,19 @@ Krypton's own loopback surfaces are unchanged and still follow that file; Xenon 
 resource browser has a categorical axis those surfaces do not have. If the two are ever expected to
 match chip for chip again, this is the section to revisit.
 
+### Stage 6 — Dark / light (2026-08-13)
+
+The browse UI now has two paints of the same identity. Dark remains the default — it is what
+the pages were designed in, and what Krypton's loopback surfaces still are. Light inverts the
+surface and ink tokens (and drops kind hues, the logo, and the gold accent to a darker band so
+contrast holds) and is a choice, not an OS follow.
+
+The switch lives in the header as two words, `dark` and `light`. It is a form POST to `/theme`,
+the same shape as sign-out, so it works with JavaScript off and does not need an inline script
+that would block a Content-Security-Policy. The choice is an `xenon_theme` cookie on this
+browser, not an account field, and the server stamps `data-theme` on `<html>` so the first
+paint is already the right one.
+
 ### Stage 5 — Counts on the kind filter (2026-08-10)
 
 The kind row said which kinds *can* exist, never how many of each *do*. Five chips looked identical
@@ -375,7 +388,6 @@ then moves to `assets/app.css`. That churn is expected, not a surprise.
   from it. There is no `/f/` prefix.
 - Real-time updates (SSE/WebSocket) — still out of scope per Krypton spec 212.
 - Editing resources through the browse UI; Xenon remains a sink.
-- Theming beyond the existing Binance-dark identity.
 
 ## Resources
 

@@ -154,6 +154,7 @@ mod tests {
         let css = ASSETS[index_of("app.css").unwrap()].body;
         for needed in [
             ":root{--bg:",
+            "html[data-theme=\"light\"]",
             ".artifact-open",
             ".rv-finding",
             ".rv-steps",

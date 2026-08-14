@@ -267,6 +267,11 @@ the URL does not advertise itself.
 `{"ok":true}` is not a page. Both are POST-only, so `SameSite=Lax` keeps the
 session cookie off a cross-site attempt to sign someone out.
 
+`POST /theme` is the browse UI's dark/light switch. It sets an `xenon_theme`
+cookie (`dark` or `light`) and answers `303` to the `next` path the form
+carried, which is the page the reader was on. Unknown values leave the cookie
+alone. The preference is per browser, not per account.
+
 The chrome is drawn per reader: signed in, the nav shows the account, `tokens`,
 and `sign out`; an admin also sees `admin`. Anonymous, it shows `sign in` only.
 

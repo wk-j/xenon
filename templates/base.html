@@ -8,7 +8,7 @@
      CSS and JS are separate files under `assets/`; nothing is inlined, which is
      what keeps a Content-Security-Policy writable. -#}
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="{{ nav.theme }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -42,6 +42,15 @@
     {%- else %}
     <a href="/login">sign in</a>
     {%- endif %}
+    {#- Theme is a page preference, not an account one: the cookie lives on
+        this browser, and the form works without JS the same way sign-out
+        does. Two named submit buttons so the posted value is the mode they
+        clicked, not a hidden field that can drift from the label. -#}
+    <form method="post" action="/theme" class="theme">
+      <input type="hidden" name="next" value="{{ nav.here }}">
+      <button type="submit" name="theme" value="dark"{% if nav.theme.is_dark() %} class="on" aria-pressed="true"{% else %} aria-pressed="false"{% endif %}>dark</button>
+      <button type="submit" name="theme" value="light"{% if nav.theme.is_light() %} class="on" aria-pressed="true"{% else %} aria-pressed="false"{% endif %}>light</button>
+    </form>
   </nav>
 </header>
 {%- if !crumbs.is_empty() %}
