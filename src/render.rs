@@ -109,26 +109,38 @@ fn rv_scalar(body: &str, key: &str) -> Option<String> {
     None
 }
 
-/// The indented lines under a bare `key:`, trimmed. Empty when the key is absent
-/// or carries an inline value.
+/// The lines under a bare `key:`, trimmed. Empty when the key is absent or
+/// carries an inline value.
+///
+/// A member line is either indented or a `- ` list item at column zero — both
+/// are valid YAML and Krypton lanes write both, commonly mixing them (`- at:`
+/// flush left with an indented `say:` under it). Anything else at column zero
+/// starts the next key and ends the group. The Krypton `#reviews` archive
+/// accepted this in spec 217; stopping at the first flush-left `-` left
+/// `<ol class="rv-steps">` empty while the title still rendered.
 fn rv_group(body: &str, key: &str) -> Vec<String> {
     let mut collecting = false;
     let mut out: Vec<String> = Vec::new();
     for line in body.lines() {
         let indented = line.starts_with(' ') || line.starts_with('\t');
-        if !indented {
-            if collecting {
+        let trimmed = line.trim();
+        if collecting {
+            if trimmed.is_empty() {
+                continue;
+            }
+            if !indented && !trimmed.starts_with('-') {
                 break;
             }
-            if let Some((k, v)) = line.split_once(':') {
-                if k.trim().eq_ignore_ascii_case(key) && v.trim().is_empty() {
-                    collecting = true;
-                }
-            }
+            out.push(trimmed.to_string());
             continue;
         }
-        if collecting && !line.trim().is_empty() {
-            out.push(line.trim().to_string());
+        if indented {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once(':') {
+            if k.trim().eq_ignore_ascii_case(key) && v.trim().is_empty() {
+                collecting = true;
+            }
         }
     }
     out
@@ -632,6 +644,26 @@ mod tests {
         let second = html.find("src/b.rs:2").unwrap();
         assert!(first < second, "steps must keep document order");
         assert!(html.contains("first") && html.contains("second"));
+    }
+
+    #[test]
+    fn walkthrough_reads_flush_left_list_items() {
+        // The shape Krypton lanes actually write: `- at:` at column zero with
+        // an indented `say:` under it. Requiring indent used to emit the title
+        // plus an empty <ol class="rv-steps">.
+        let html = render_rv_walkthrough(
+            "title: tour\nsteps:\n- at: src/a.rs:1\n  say: first\n- at: src/b.rs:2\n  say: second\n",
+        );
+        assert_eq!(html.matches("<li>").count(), 2, "{html}");
+        assert!(
+            html.contains("src/a.rs:1") && html.contains("first"),
+            "{html}"
+        );
+        assert!(
+            html.contains("src/b.rs:2") && html.contains("second"),
+            "{html}"
+        );
+        assert!(html.contains("rv-steps__title"));
     }
 
     #[test]
