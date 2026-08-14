@@ -1,16 +1,13 @@
 # Xenon
 
-Central resource server for [Krypton](https://github.com/wk-j/krypton)-generated
-work product — HTML artifacts, review bundles, issue analyses, docs, and
-attention flags.
+Central resource server for [Krypton](https://github.com/wk-j/krypton) work
+product — HTML artifacts, review bundles, issue analyses, docs, and attention
+flags.
 
-Everything Krypton's ACP Harness produces lives in one machine's working tree
-under a gitignored `.krypton/` directory, viewable only through loopback
-endpoints of the running app. Xenon is where that work goes to become durable,
-shareable, and readable when Krypton is not running.
-
-Single static binary. SQLite for metadata, a content-addressed directory for
-file bytes. No external services.
+Krypton keeps that work in a gitignored `.krypton/` tree, reachable only on
+loopback while the app is running. Xenon makes it durable and readable when
+Krypton is not. Single static binary; SQLite for metadata, content-addressed
+blobs for files; no external services.
 
 ## Install
 
@@ -19,70 +16,49 @@ brew install wk-j/tap/xenon
 brew services start xenon
 ```
 
-Homebrew builds from source — `rust` comes in as a build-only dependency — and
-installs three commands. `xenon` is the server. `xenon-serve` wraps it and mints
-the session secret on first run, so the service starts with nothing to configure;
-that is what `brew services` runs. `xen` is the command-line client (login,
-invite, tokens, push). Track `master` instead of the last tag with
+Homebrew builds from source (`rust` is build-only) and installs `xenon` (server),
+`xenon-serve` (wraps the server and mints the session secret on first run — what
+`brew services` runs), and `xen` (CLI). Track `master` with
 `brew install --HEAD wk-j/tap/xenon`.
 
-Reaching it over plain `http://localhost` needs one more thing first: the session
-cookie keeps its `Secure` flag, so the browser will not send it back and no login
-sticks — including the one that creates the admin. Run it in the foreground with
-the flag instead of as a service:
+Plain `http://localhost` will not keep a login: the session cookie keeps its
+`Secure` flag. Run in the foreground instead:
 
 ```sh
 XENON_INSECURE_COOKIES=1 xenon-serve
 ```
 
-`xenon-serve` deliberately does not set that itself. A background service cannot
-know it is only ever reached from this machine, and a `Secure`-less cookie on a
-box that later gets exposed is exactly the mistake the flag exists to make
-deliberate. Put it behind TLS instead and the flag is not needed at all; see
-[Deployment](#deployment).
-
-Either way, the next step is [First account](#first-account).
+`xenon-serve` does not set that itself. Put the server behind TLS and skip the
+flag; see [Deployment](#deployment). Then [create the first account](#first-account).
 
 ## Quick start
 
-Working on Xenon itself, from a checkout:
+From a checkout:
 
 ```sh
-make dev
-```
-
-That runs `scripts/dev.sh`, which generates a session secret on first run
-(persisted at `~/.config/xenon/.session-secret`, mode 0600), allows non-`Secure`
-cookies so plain HTTP works on localhost, and serves on `:8787`.
-
-```sh
-make dev                  # debug build
+make dev                  # debug build on :8787
+make watch                # rebuild and restart on save
 make release              # optimized build
 make reset                # wipe ~/.config/xenon (prompts first), then start fresh
 PORT=9000 scripts/dev.sh  # different port
 ```
 
-**State lives in `~/.config/xenon`, not in this checkout** — the database, the
-blob store, the price table, and the session secret. So a dev build and an
-installed binary are the same server with the same accounts no matter which
-directory either was started from, and deleting the checkout does not delete
-published work. Point `XENON_DATA_DIR` elsewhere to override.
+`scripts/dev.sh` generates a session secret on first run
+(`~/.config/xenon/.session-secret`, mode 0600) and sets
+`XENON_INSECURE_COOKIES=1`. Do not set that flag in a real deployment.
 
-**Development only** — `scripts/dev.sh` sets `XENON_INSECURE_COOKIES=1`. Real
-deployments terminate TLS at a reverse proxy and must not set it; see
-[Deployment](#deployment).
+**State lives in `~/.config/xenon`**, not in this checkout — database, blobs,
+price table, and session secret. A dev build and an installed binary share the
+same accounts. Override with `XENON_DATA_DIR`.
 
 ## First account
 
-Open <http://localhost:8787/register>. **The first account to register becomes
-the admin** — do this immediately, before the instance is reachable from
-anywhere else. After that, registration requires an admin-issued invite code
-unless you set `XENON_ALLOW_SIGNUP=1`.
+Open <http://localhost:8787/register>. **The first account becomes the admin** —
+do this before the instance is reachable from anywhere else. After that,
+registration needs an admin-issued invite unless `XENON_ALLOW_SIGNUP=1`.
 
-The home page is the **activity feed** — what was published, revised, signed
-into, and minted, newest first and grouped by day. The project list lives at
-`/projects`, one click away in the nav. The first account also gets **`/admin`**
-— every user, every project, and a button that mints the next invite.
+`/` is the activity feed. `/projects` is the project list. The first account
+also gets `/admin` (users, projects, next invite).
 
 Mint a token at `/settings/tokens`, then point Krypton at it:
 
@@ -101,30 +77,26 @@ when you paste it in.
 | Variable | Default | Meaning |
 |---|---|---|
 | `XENON_PORT` | `8787` | listen port (binds `0.0.0.0`) |
-| `XENON_DATA_DIR` | `~/.config/xenon` | holds `xenon.db`, `blobs/`, `prices.json`, `.session-secret` |
-| `XENON_SESSION_SECRET` | — | **required**, ≥32 chars; refuses to start without it |
+| `XENON_DATA_DIR` | `~/.config/xenon` | `xenon.db`, `blobs/`, `prices.json`, `.session-secret` |
+| `XENON_SESSION_SECRET` | — | **required**, ≥32 chars |
 | `XENON_MAX_BLOB_MB` | `64` | per-file upload cap |
 | `XENON_ALLOW_SIGNUP` | `0` | `1` opens registration to anyone |
-| `XENON_INSECURE_COOKIES` | `0` | `1` drops `Secure` from the session cookie — local HTTP development only |
-| `XENON_ACTIVITY_RETENTION_DAYS` | `90` | how long the activity feed keeps a row; `0` keeps everything |
+| `XENON_INSECURE_COOKIES` | `0` | `1` drops `Secure` from the session cookie — local HTTP only |
+| `XENON_ACTIVITY_RETENTION_DAYS` | `90` | activity feed retention; `0` keeps everything |
 
-There is deliberately **no admin token and no seeded admin password**, so there
-is no long-lived credential to leak from a compose file or shell history.
+No admin token and no seeded admin password — nothing long-lived to leak from a
+compose file or shell history.
 
 ## Deployment
 
-Xenon speaks plain HTTP and expects TLS to terminate at a reverse proxy. Put it
-behind nginx/Caddy/Traefik and forward `X-Forwarded-Proto`. Do **not** set
-`XENON_INSECURE_COOKIES` in production — browsers must hit HTTPS so the
-session cookie's `Secure` flag works.
+Xenon speaks HTTP. Terminate TLS at a reverse proxy (nginx/Caddy/Traefik) and
+forward `X-Forwarded-Proto`. Do **not** set `XENON_INSECURE_COOKIES` in
+production.
 
 ### Docker Compose + Caddy (automatic HTTPS)
 
-The repo ships a Compose stack that runs Xenon behind Caddy. Caddy obtains and
-renews a Let's Encrypt certificate for your domain.
-
 1. Point DNS `A`/`AAAA` for your hostname at the server.
-2. Open ports **80** and **443** to the public internet.
+2. Open ports **80** and **443**.
 3. Configure and start:
 
 ```sh
@@ -135,9 +107,8 @@ docker compose up -d
 ```
 
 Files: [`docker-compose.yml`](docker-compose.yml), [`Caddyfile`](Caddyfile),
-[`.env.example`](.env.example). Xenon stays on the internal Compose network;
-only Caddy is published. After it is up, open `https://$XENON_DOMAIN/register`
-immediately and create the first (admin) account.
+[`.env.example`](.env.example). Only Caddy is published. Then open
+`https://$XENON_DOMAIN/register` and create the first (admin) account.
 
 ### Docker only (no TLS)
 
@@ -150,80 +121,59 @@ docker run -d --name xenon -p 8787:8787 \
   ghcr.io/wk-j/xenon:latest
 ```
 
-Put your own reverse proxy in front of `:8787` before exposing this to the
-internet. Release images are also tagged with the exact version and minor
-series, for example `0.1.7` and `0.1`. Pin an exact version instead of
-`latest` when repeatable deployments matter. To build locally instead, run
-`docker build -t xenon .` and use `xenon` as the image name above.
+Put a reverse proxy in front of `:8787` before exposing this. Images are also
+tagged `0.1.7` / `0.1` — pin an exact version instead of `latest` when
+repeatable deployments matter. To build locally: `docker build -t xenon .`
 
 ### Backups
 
-Back up the whole `XENON_DATA_DIR` (the `xenon_data` volume in Compose) — the
-SQLite database alone is not enough, because file bytes live beside it in
-`blobs/`. With the Compose stack, also back up the `caddy_data` volume if you
-want to keep issued certificates across reinstalls.
+Back up the whole `XENON_DATA_DIR` (the `xenon_data` volume in Compose) — SQLite
+alone is not enough; file bytes live in `blobs/`. Also back up `caddy_data` to
+keep issued certificates across reinstalls.
 
 ## Concepts
 
-A **resource** is one publishable thing: `{ project, kind, slug, title, meta,
-files[] }`. Five kinds — `artifact`, `review`, `analysis`, `doc`, `attention`.
-Bundles and single files differ only in file count; an `attention` record has no
-files at all and carries everything in `meta`.
+A **resource** is `{ project, kind, slug, title, meta, files[] }`. Kinds:
+`artifact`, `review`, `analysis`, `doc`, `attention`. Bundles and single files
+differ only in file count; `attention` has no files and carries everything in
+`meta`.
 
-Blobs are **immutable** and content-addressed by sha256. Resources are
-**mutable through revisions**: each push appends a sealed revision, and the
-latest becomes the head. Nothing is ever silently overwritten, and every
-revision keeps its own permalink at `/r/<project>/<kind>/<slug>/@<seq>`.
+Blobs are **immutable** (sha256). Resources change by **revision**: each push
+appends a sealed revision; the latest is head. Permalink:
+`/r/<project>/<kind>/<slug>/@<seq>`. An interrupted push never exposes a
+half-uploaded resource.
 
-A revision is invisible until it is committed, so an interrupted push never
-exposes a half-uploaded resource.
+## Security
 
-## Security posture
-
-- Sessions are server-side rows; logout and revocation take effect immediately.
-- Passwords are argon2id. Login is rate-limited and reports one generic failure
-  for both unknown-email and wrong-password.
-- **A token can never mint another token** — minting requires a session, so a
-  leaked integration token cannot escalate into a permanent foothold.
-- Token secrets are stored only as sha256; the plaintext exists once, in the
-  creation response.
-- Uploaded HTML is agent-authored and is framed `sandbox`ed. Uploaded markdown
-  renders with raw HTML disabled. Raw file reads send `nosniff`, `no-store`,
-  `no-referrer`, and a restrictive CSP.
-- The browse UI and every data API require a login. A visitor with no session
-  is sent to `/login`; a request with no credential is `401`. `/healthz`,
-  `/register`, and `/assets/*` stay reachable so a person can get in.
-- **Public** means every account on this instance may read the project. It does
-  not mean the open internet.
-- A caller who may not read a private project is told it does not exist, so
-  project names are not enumerable.
+- Sessions are server-side; logout and revocation take effect immediately.
+- Passwords are argon2id. Login is rate-limited and reports one generic failure.
+- **A token can never mint another token** — minting requires a session.
+- Token secrets are stored only as sha256; plaintext exists once, in the creation response.
+- Uploaded HTML is framed `sandbox`ed. Markdown renders with raw HTML disabled.
+  Raw file reads send `nosniff`, `no-store`, `no-referrer`, and a restrictive CSP.
+- The browse UI and every data API require a login. `/healthz`, `/register`, and
+  `/assets/*` stay reachable.
+- **Public** means every account on this instance may read the project, not the open internet.
+- A caller who may not read a private project is told it does not exist.
 
 ## LLM usage
 
-Besides resources, Xenon stores **per-turn LLM usage** streamed live by Krypton:
-token counts, model, lane, and the cost the provider reported. Rows are numeric
-only — no prompt or response text ever reaches this server.
+Xenon stores **per-turn LLM usage** streamed by Krypton (token counts, model,
+lane, provider-reported cost — no prompt or response text). Browse at
+`/p/<project>/usage`. Windows: today · 7 days · 30 days · all. Totals by model,
+lane, backend, and day, plus the newest 60 turns.
 
-Browse them at `/p/<project>/usage`, reachable from the `llm usage` tab on any
-project page. Pick a window (today · 7 days · 30 days · all) and the page shows
-the range total, the same figures grouped by model, lane, backend, and day, and
-then the newest 60 turns themselves — the rows the sums are made of, with the
-per-turn facts that cannot be summed: why each turn stopped, what started it,
-how full its context was, and whether the model id was one the agent confirmed.
-
-Cost estimates need a rate table. Xenon ships **no prices of its own**: copy
-`assets/prices.example.json` to `~/.config/xenon/prices.json` and replace its
-zeros with the figures from each provider's price page. Until you do, the page
-shows token counts and names each model as unpriced — a blank column is honest,
-an invented total is not. Prices are applied on read, so fixing a rate fixes
-every past report.
+Cost estimates need a rate table: copy `assets/prices.example.json` to
+`~/.config/xenon/prices.json` and fill in provider rates. Until then, models
+show as unpriced. Prices are applied on read, so fixing a rate fixes every past
+report.
 
 ## CLI
 
-`xen` is a second binary in this repo that talks to a running Xenon over the
-same `/v1` protocol as the browse UI and Krypton. The server command stays
-`xenon`. `brew install wk-j/tap/xenon` puts `xen` on your `PATH`. From a
-checkout, run it in place or install just the client:
+`xen` talks to a running Xenon over the same `/v1` protocol as the UI and
+Krypton. Config: `~/.config/xenon/cli.toml` (mode 0600). Override with `--url` /
+`--token` or `XENON_URL` / `XENON_TOKEN`. Minting or revoking a token still
+needs a session. `--json` prints the server body instead of a table.
 
 ```sh
 xen --help
@@ -234,30 +184,23 @@ xen push my.project --kind doc --slug notes --title Notes --file README.md
 xen resource list my.project
 xen activity
 
-# from this checkout, without installing:
+# from this checkout:
 cargo run -p xen -- --help
 cargo install --path cli --locked
 ```
 
-Configuration lives in `~/.config/xenon/cli.toml` (mode 0600): the server URL,
-a session cookie from `xen login` / `xen register`, and an optional API token.
-`--url` / `--token` and `XENON_URL` / `XENON_TOKEN` override the file. Minting
-or revoking a token still needs a session — a token cannot mint another token.
-
-`--json` prints the server body instead of a table, for scripts.
-
 ## API
 
-See [`docs/01-protocol.md`](docs/01-protocol.md) for the wire contract. The full
-design and its rationale live in the Krypton repo at
-`docs/212-xenon-resource-server.md`.
+Wire contract: [`docs/01-protocol.md`](docs/01-protocol.md). Design and rationale
+live in the Krypton repo at `docs/212-xenon-resource-server.md`.
 
 ## Development
 
 ```sh
-make test    # 105 unit + 60 end-to-end tests
+make test    # unit + end-to-end (server and xen CLI)
 make lint    # clippy, warnings denied
 make fmt     # rustfmt in place
 make check   # fmt --check + lint + test
+make docker  # build the deployment image
 make help    # every target
 ```
