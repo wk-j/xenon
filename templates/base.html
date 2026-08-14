@@ -22,36 +22,54 @@
 <div class="wrap">
 <header class="top">
   <h1><a href="/">xenon</a></h1>
-  {#- The nav is the only chrome that changes with who is reading. It used to be
-      three static links, which offered "sign in" to someone already signed in
-      and a `tokens` link that bounced an anonymous reader straight back. -#}
-  <nav>
-    {#- Activity is the home page, so the logo and the first nav link are the
-        same destination. It is visible once you are signed in. -#}
-    <a href="/">activity</a>
-    <a href="/projects">projects</a>
+  {#- Destinations sit with the wordmark. Activity is the home page, so the
+      logo and the first of these are the same place. They are a sibling of
+      the account cluster, not a parent of it: on a narrow screen the cluster
+      wraps onto its own full-width row instead of being trapped in the
+      leftover column beside the logo. Tokens stay visible — they are how a
+      new account points Krypton at this instance, and hiding them behind
+      the name would bury the first thing a reader has to do. -#}
+  <nav class="nav__go">
+    <a href="/"{% if nav.on_activity() %} class="on" aria-current="page"{% endif %}>activity</a>
+    <a href="/projects"{% if nav.on_projects() %} class="on" aria-current="page"{% endif %}>projects</a>
+  </nav>
+  <div class="nav__util">
     {%- if nav.signed_in %}
-    <a href="/settings/tokens">tokens</a>
-    {%- if nav.is_admin %}
-    <a href="/admin">admin</a>
-    {%- endif %}
-    <span class="top__who">{{ nav.who }}</span>
-    {#- A form, not a link: `SameSite=Lax` keeps the session cookie off a
-        cross-site POST, so nobody else's page can sign this reader out. -#}
-    <form method="post" action="/logout"><button type="submit">sign out</button></form>
+    <span class="nav__acct">
+      <a href="/settings/tokens"{% if nav.on_tokens() %} class="on" aria-current="page"{% endif %}>tokens</a>
+      {%- if nav.is_admin %}
+      <a href="/admin"{% if nav.on_admin() %} class="on" aria-current="page"{% endif %}>admin</a>
+      {%- endif %}
+    </span>
+    <span class="nav__sep" aria-hidden="true">·</span>
+    <span class="nav__who">
+      <span class="top__who">{{ nav.who }}</span>
+      {#- A form, not a link: `SameSite=Lax` keeps the session cookie off a
+          cross-site POST, so nobody else's page can sign this reader out. -#}
+      <form method="post" action="/logout"><button type="submit">sign out</button></form>
+    </span>
     {%- else %}
-    <a href="/login">sign in</a>
+    <span class="nav__who">
+      <a href="/login"{% if nav.on_login() %} class="on" aria-current="page"{% endif %}>sign in</a>
+    </span>
     {%- endif %}
+    <span class="nav__sep" aria-hidden="true">·</span>
     {#- Theme is a page preference, not an account one: the cookie lives on
         this browser, and the form works without JS the same way sign-out
-        does. Two named submit buttons so the posted value is the mode they
-        clicked, not a hidden field that can drift from the label. -#}
+        does. One button posts the other mode — a pair of words next to the
+        name made the chrome look like eight destinations. The icon is the
+        mode the page is in; the label says where a click will go. -#}
     <form method="post" action="/theme" class="theme">
       <input type="hidden" name="next" value="{{ nav.here }}">
-      <button type="submit" name="theme" value="dark"{% if nav.theme.is_dark() %} class="on" aria-pressed="true"{% else %} aria-pressed="false"{% endif %}>dark</button>
-      <button type="submit" name="theme" value="light"{% if nav.theme.is_light() %} class="on" aria-pressed="true"{% else %} aria-pressed="false"{% endif %}>light</button>
+      <button type="submit" name="theme" value="{{ nav.theme.other() }}" aria-label="{{ nav.theme.toggle_label() }}" title="{{ nav.theme.toggle_label() }}">
+        {%- if nav.theme.is_dark() %}
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+        {%- else %}
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle fill="none" stroke="currentColor" stroke-width="2" cx="12" cy="12" r="4"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+        {%- endif %}
+      </button>
     </form>
-  </nav>
+  </div>
 </header>
 {%- if !crumbs.is_empty() %}
 {#- Every page deeper than the root says where it is and offers one click back

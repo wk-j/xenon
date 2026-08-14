@@ -120,6 +120,39 @@ struct Nav {
     here: String,
 }
 
+impl Nav {
+    /// Path only, so a filtered feed (`/?kind=`) still counts as the feed.
+    fn path(&self) -> &str {
+        self.here
+            .split_once('?')
+            .map(|(p, _)| p)
+            .unwrap_or(self.here.as_str())
+    }
+
+    fn on_activity(&self) -> bool {
+        self.path() == "/"
+    }
+
+    /// The project list and everything under a project — resources, usage,
+    /// a single resource — are the same destination in the chrome.
+    fn on_projects(&self) -> bool {
+        let p = self.path();
+        p == "/projects" || p.starts_with("/p/") || p.starts_with("/r/")
+    }
+
+    fn on_tokens(&self) -> bool {
+        self.path() == "/settings/tokens"
+    }
+
+    fn on_admin(&self) -> bool {
+        self.path() == "/admin"
+    }
+
+    fn on_login(&self) -> bool {
+        self.path() == "/login" || self.path() == "/register"
+    }
+}
+
 /// The two modes the browse UI can paint. Anything else in the cookie is
 /// treated as dark, which is the identity the pages were designed in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,8 +199,22 @@ impl Theme {
         matches!(self, Self::Dark)
     }
 
-    fn is_light(&self) -> bool {
-        matches!(self, Self::Light)
+    /// The mode a click will switch to. The chrome is one button, not two
+    /// named ones, so the posted value has to be the other mode.
+    fn other(self) -> Self {
+        match self {
+            Self::Dark => Self::Light,
+            Self::Light => Self::Dark,
+        }
+    }
+
+    /// What the control does, not what the page currently is — a toggle
+    /// that announced "dark" while already dark would read as a status.
+    fn toggle_label(self) -> &'static str {
+        match self {
+            Self::Dark => "use light theme",
+            Self::Light => "use dark theme",
+        }
     }
 }
 
@@ -2107,6 +2154,37 @@ fn has_browser_session(actor: &Option<Actor>) -> bool {
 mod tests {
     use super::*;
 
+    fn nav_at(here: &str) -> Nav {
+        Nav {
+            signed_in: true,
+            who: "wk".into(),
+            is_admin: true,
+            theme: Theme::Dark,
+            view: View::Card,
+            here: here.into(),
+        }
+    }
+
+    #[test]
+    fn nav_marks_the_section_the_page_belongs_to() {
+        let feed = nav_at("/?kind=resource.publish");
+        assert!(feed.on_activity());
+        assert!(!feed.on_projects() && !feed.on_tokens() && !feed.on_admin());
+
+        let project = nav_at("/p/krypton/usage");
+        assert!(project.on_projects());
+        assert!(!project.on_activity());
+
+        let permalink = nav_at("/r/krypton/doc/notes/@1");
+        assert!(permalink.on_projects());
+
+        assert!(nav_at("/settings/tokens").on_tokens());
+        assert!(nav_at("/admin").on_admin());
+        assert!(nav_at("/login").on_login());
+        assert!(nav_at("/register").on_login());
+        assert!(!nav_at("/projects").on_login());
+    }
+
     #[test]
     fn theme_cookie_only_accepts_the_two_modes() {
         assert_eq!(Theme::from_cookie(None), Theme::Dark);
@@ -2116,6 +2194,14 @@ mod tests {
         assert_eq!(Theme::from_form("light"), Some(Theme::Light));
         assert_eq!(Theme::from_form("dark"), Some(Theme::Dark));
         assert_eq!(Theme::from_form("neon"), None);
+    }
+
+    #[test]
+    fn theme_toggle_posts_the_other_mode() {
+        assert_eq!(Theme::Dark.other(), Theme::Light);
+        assert_eq!(Theme::Light.other(), Theme::Dark);
+        assert_eq!(Theme::Dark.toggle_label(), "use light theme");
+        assert_eq!(Theme::Light.toggle_label(), "use dark theme");
     }
 
     #[test]

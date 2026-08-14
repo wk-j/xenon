@@ -51,20 +51,46 @@ a:hover{text-decoration:underline}
 header.top{display:flex;align-items:baseline;flex-wrap:wrap;gap:16px;border-bottom:1px solid var(--border);
 padding-bottom:12px;margin-bottom:20px}
 header.top h1{font:600 15px/1 var(--mono);letter-spacing:.04em;margin:0;color:var(--accent)}
-header.top nav{margin-left:auto;display:flex;flex-wrap:wrap;gap:14px;font:11px/1 var(--mono);letter-spacing:.04em}
-header.top nav a{color:var(--muted)}
-header.top nav a:hover{color:var(--accent)}
-header.top nav .top__who{color:var(--fg)}
+/* The chrome used to be one flat row of eight equally-spaced words:
+   destinations, account tools, identity, and the theme switch all read as
+   the same kind of thing. Cluster them as siblings of the wordmark, not as
+   one nested nav: destinations stay with the name (they are where you go),
+   and the rest is pushed right. On a narrow screen that cluster wraps onto
+   its own full-width row instead of being trapped in the leftover column
+   beside the logo — which is what used to orphan the theme control on a
+   third line. Inner gap stays tight; a quiet middot is what separates the
+   clusters, the same glyph the rest of the chrome uses between facts.
+   Groups do not wrap internally, so "sign out" cannot land on a new line
+   without the name it belongs to. */
+header.top .nav__go,header.top .nav__acct,header.top .nav__who{
+display:flex;flex-wrap:nowrap;align-items:baseline;gap:12px;
+font:11px/1 var(--mono);letter-spacing:.04em}
+/* Center, not baseline: the theme icon is a box, not a letter, so a baseline
+   alignment sat the moon under the words and left a hole after the last
+   middot. Nowrap so the icon cannot wrap off onto its own right-aligned
+   line — that is the other way this row looked broken. */
+header.top .nav__util{margin-left:auto;display:flex;flex-wrap:nowrap;
+align-items:center;gap:12px;font:11px/1 var(--mono);letter-spacing:.04em}
+header.top .nav__sep{color:var(--border);user-select:none}
+header.top .nav__go a,header.top .nav__util a{color:var(--muted)}
+header.top .nav__go a:hover,header.top .nav__util a:hover{color:var(--accent)}
+header.top .nav__go a.on,header.top .nav__util a.on{color:var(--fg)}
+header.top .top__who{color:var(--fg)}
 /* sign out has to be a form button; it reads as the nav link beside it */
-header.top nav form{margin:0}
-header.top nav button{background:none;border:0;padding:0;color:var(--muted);
+header.top .nav__util form{margin:0}
+header.top .nav__util button{background:none;border:0;padding:0;color:var(--muted);
 font:inherit;letter-spacing:inherit;cursor:pointer}
-header.top nav button:hover{color:var(--accent);text-decoration:underline}
-/* Theme sits in the nav as two words, same voice as the other chrome links.
-   The current mode is ink, not a filled chip — a second yellow control next
-   to the logo would spend the accent twice. */
-header.top nav form.theme{display:flex;gap:10px}
-header.top nav .theme button.on{color:var(--fg)}
+header.top .nav__util button:hover{color:var(--accent);text-decoration:underline}
+/* Theme is one icon, not two words. Sized to the 11px chrome so it shares
+   a midline with the words; padding + negative margin grow the hit target
+   without pushing the glyph off the line. No underline — there is no
+   word to underline. */
+header.top form.theme{display:flex;align-items:center}
+header.top .theme button{display:flex;align-items:center;justify-content:center;
+width:12px;height:12px;padding:5px;margin:-5px;box-sizing:content-box;
+color:var(--fg);border-radius:4px;line-height:0}
+header.top .theme button:hover{color:var(--accent);text-decoration:none}
+header.top .theme svg{display:block;width:12px;height:12px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
 /* Display mode for a page that lists items. The switch is a page control, not
    chrome, so it sits on the row above the list it changes — right-aligned,

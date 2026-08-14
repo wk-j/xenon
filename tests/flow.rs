@@ -1786,7 +1786,7 @@ async fn the_nav_reflects_who_is_reading() {
     let (status, login) = server.get_html("/login", None).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        login.contains("<a href=\"/login\">sign in</a>"),
+        login.contains("<a href=\"/login\" class=\"on\" aria-current=\"page\">sign in</a>"),
         "an anonymous reader needs the way in: {login}"
     );
     assert!(
@@ -1817,6 +1817,10 @@ async fn the_nav_reflects_who_is_reading() {
             html.contains("href=\"/admin\""),
             "{path} hides admin from the first account: {html}"
         );
+        assert!(
+            html.contains("class=\"nav__go\"") && html.contains("class=\"nav__util\""),
+            "{path} flattened the nav back into one undifferentiated row: {html}"
+        );
     }
 }
 
@@ -1841,8 +1845,12 @@ async fn the_browse_ui_can_switch_theme() {
         "the form must say where to return; Referer is stripped: {login}"
     );
     assert!(
-        login.contains("value=\"dark\" class=\"on\""),
-        "the current mode is the one marked on: {login}"
+        login.contains("value=\"light\"") && login.contains("use light theme"),
+        "dark page: the control posts light, and says so: {login}"
+    );
+    assert!(
+        !login.contains("value=\"dark\""),
+        "a toggle posts the other mode, not both: {login}"
     );
 
     let (status, location, cookie) = server
@@ -1863,8 +1871,14 @@ async fn the_browse_ui_can_switch_theme() {
         login.contains("data-theme=\"light\""),
         "the cookie has to paint the page, not just sit there: {login}"
     );
-    assert!(login.contains("value=\"light\" class=\"on\""), "{login}");
-    assert!(!login.contains("value=\"dark\" class=\"on\""), "{login}");
+    assert!(
+        login.contains("value=\"dark\"") && login.contains("use dark theme"),
+        "light page: the control posts dark, and says so: {login}"
+    );
+    assert!(
+        !login.contains("value=\"light\""),
+        "a toggle posts the other mode, not both: {login}"
+    );
 
     let (status, location, cookie) = server
         .post_web_form(
@@ -2638,11 +2652,20 @@ async fn the_home_page_is_the_feed_and_the_project_list_moved_to_its_own_url() {
     assert_eq!(status, StatusCode::OK);
     assert!(projects.contains("no projects yet"), "{projects}");
 
-    // The nav offers both, and names the root as activity.
-    assert!(home.contains("<a href=\"/\">activity</a>"), "{home}");
+    // The nav offers both, names the root as activity, and marks the section
+    // the reader is on — a flat row of equal words is how the chrome used to
+    // hide which of the eight items was current.
+    assert!(
+        home.contains("<a href=\"/\" class=\"on\" aria-current=\"page\">activity</a>"),
+        "{home}"
+    );
     assert!(
         home.contains("<a href=\"/projects\">projects</a>"),
         "{home}"
+    );
+    assert!(
+        !home.contains("href=\"/projects\" class=\"on\""),
+        "projects must not light up on the feed: {home}"
     );
 
     // Filter chips and the pager address the feed at `/`, not at the old URL.

@@ -161,6 +161,13 @@ mod tests {
             // button and "list" laid out exactly like "cards".
             ".viewswitch",
             ".grid--list",
+            // The chrome template emits these two clusters; without the rules
+            // destinations and account tools collapse back into one row.
+            ".nav__go",
+            ".nav__util",
+            // One icon, not the old pair of words; losing the rule leaves a
+            // 11px button that underlines an SVG.
+            ".theme svg",
             ".rv-finding",
             ".rv-steps",
             ".rv-chart",
