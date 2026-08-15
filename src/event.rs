@@ -70,6 +70,16 @@ pub const KINDS: [&str; 14] = [
     INVITE_CLAIM,
 ];
 
+/// Kinds that can appear on a project's own feed. Account rows have no
+/// `project_slug`, so they never match a project filter — listing them as
+/// chips would offer filters that are always empty.
+pub const PROJECT_KINDS: [&str; 4] = [
+    RESOURCE_PUBLISH,
+    RESOURCE_REVISE,
+    PROJECT_CREATE,
+    PROJECT_VISIBILITY,
+];
+
 /// Where a row's visibility comes from — not what it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Audience {

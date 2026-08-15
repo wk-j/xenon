@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="project-head">
+  <span class="logo logo--lg" style="--h:{{ hue }}" aria-hidden="true">{{ initial }}</span>
+  <h2 class="meta">{{ project }}</h2>
+  {%- if let Some(repo) = github_repo %}
+  {#- The stored value is normalized owner/repo, so it is safe in the href;
+      askama escapes the label. -#}
+  <a class="project-head__gh" href="https://github.com/{{ repo }}"
+     target="_blank" rel="noopener noreferrer">{{ repo }} ↗</a>
+  {%- endif %}
+</div>
+
+{% include "projecttabs.html" %}
+
+{#- Event kinds that can appear in this project, not the fleet-wide set:
+    account rows never carry a project, so those chips would always be empty. -#}
+<div class="kinds kinds--events">
+  <a href="{{ feed_path }}" class="{% if kind_filter.is_none() %}on{% endif %}">all</a>
+  {%- for k in kinds %}
+  <a href="{{ feed_path }}?kind={{ k }}"
+     class="{% if kind_filter.as_deref() == Some(k) %}on{% endif %}">{{ k }}</a>
+  {%- endfor %}
+</div>
+
+{% include "feed.html" %}
+{% endblock %}

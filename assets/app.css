@@ -356,7 +356,7 @@ table.data td{border-bottom:1px solid var(--border);padding:6px 8px;color:var(--
 table.data tr.is-disabled td{opacity:.55}
 .admin__h{margin:28px 0 8px;font:600 13px/1.4 var(--sans)}
 
-/* Page switch (spec 214). A project's resources and its usage ledger are two
+/* Page switch. A project's activity, resources, and usage ledger are three
    bodies of data under one project, so they are peers — not a filter of one
    another, which is why this sits above the kind chips and does not borrow
    their pill shape. */

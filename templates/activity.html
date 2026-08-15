@@ -6,49 +6,13 @@
 {#- The same chip row the project page uses, so a filter looks and works the
     same wherever it appears. "all" clears both filters at once. -#}
 <div class="kinds kinds--events">
-  <a href="/" class="{% if kind_filter.is_none() %}on{% endif %}">all</a>
+  <a href="/{% if let Some(p) = project_filter %}?project={{ p }}{% endif %}"
+     class="{% if kind_filter.is_none() %}on{% endif %}">all</a>
   {%- for k in kinds %}
   <a href="/?kind={{ k }}{% if let Some(p) = project_filter %}&amp;project={{ p }}{% endif %}"
      class="{% if kind_filter.as_deref() == Some(k) %}on{% endif %}">{{ k }}</a>
   {%- endfor %}
 </div>
 
-{% if days.is_empty() %}
-<p class="empty">
-  nothing here yet — publish something from krypton with #push
-</p>
-{% else %}
-{%- for day in days %}
-<h3 class="feed__day">{{ day.label }}</h3>
-<ul class="feed">
-  {%- for row in day.rows %}
-  {#- A content row wears its resource's hue; an account row has no kind hue
-      because it is not about a resource, which is what makes the security
-      entries legible as a different thing without a second page. -#}
-  <li class="feed__row{% if let Some(k) = row.resource_kind %} k--{{ k }}{% endif %}">
-    <span class="feed__kind{% if row.resource_kind.is_some() %} feed__kind--res{% endif %}">{{ row.kind }}</span>
-    <span class="feed__say">
-      <span class="feed__actor">{{ row.actor }}</span>
-      {{ row.verb }}
-      {%- if let Some(href) = row.href %}
-      <a href="{{ href }}">{{ row.subject }}</a>
-      {%- else %}
-      <span class="feed__subject">{{ row.subject }}</span>
-      {%- endif %}
-      {%- if let Some(project) = row.project %}
-      <a class="feed__project" href="/p/{{ project }}">{{ project }}</a>
-      {%- endif %}
-    </span>
-    <time class="feed__when" title="{{ row.exact }}">{{ row.when }}</time>
-  </li>
-  {%- endfor %}
-</ul>
-{%- endfor %}
-
-{%- if let Some(cursor) = older %}
-<nav class="revnav">
-  <a href="/?{{ query_base|safe }}cursor={{ cursor }}">older →</a>
-</nav>
-{%- endif %}
-{% endif %}
+{% include "feed.html" %}
 {% endblock %}

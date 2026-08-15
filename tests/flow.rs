@@ -116,10 +116,18 @@ impl Server {
     /// A browse-UI page whose answer is a redirect: the interesting part is
     /// where it sends the reader, which `get_html` throws away.
     async fn get_location(&self, path: &str) -> (StatusCode, String) {
+        self.get_location_cookie(path, None).await
+    }
+
+    async fn get_location_cookie(&self, path: &str, cookie: Option<&str>) -> (StatusCode, String) {
+        let mut req = Request::get(path);
+        if let Some(cookie) = cookie {
+            req = req.header(header::COOKIE, cookie);
+        }
         let response = self
             .app
             .clone()
-            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .oneshot(req.body(Body::empty()).unwrap())
             .await
             .unwrap();
         let location = response
@@ -1939,7 +1947,7 @@ async fn the_browse_ui_can_switch_between_card_and_list_mode() {
     assert_eq!(res.status, StatusCode::CREATED, "{:?}", res.body);
 
     // Cards is what an unset cookie paints, on both list pages.
-    for path in ["/projects", "/p/krypton"] {
+    for path in ["/projects", "/p/krypton/resources"] {
         let (status, html) = server.get_html(path, Some(&session)).await;
         assert_eq!(status, StatusCode::OK);
         assert!(
@@ -1968,7 +1976,10 @@ async fn the_browse_ui_can_switch_between_card_and_list_mode() {
     );
 
     let signed_in_list = format!("xenon_session={session}; xenon_view=list");
-    for (path, item) in [("/projects", "krypton"), ("/p/krypton", "Release notes")] {
+    for (path, item) in [
+        ("/projects", "krypton"),
+        ("/p/krypton/resources", "Release notes"),
+    ] {
         let (status, html) = server.get_html_cookie(path, Some(&signed_in_list)).await;
         assert_eq!(status, StatusCode::OK);
         assert!(
@@ -2239,6 +2250,19 @@ async fn deep_pages_carry_a_breadcrumb_trail_back_to_the_root() {
     assert!(
         project.contains("crumbs__here\" aria-current=\"page\">krypton"),
         "the current page must not link to itself: {project}"
+    );
+
+    // Resources sit one level under the project home.
+    let (_, resources) = server
+        .get_html("/p/krypton/resources", Some(&session))
+        .await;
+    assert!(
+        resources.contains("<a href=\"/p/krypton\">krypton</a>"),
+        "resources must link back to the project: {resources}"
+    );
+    assert!(
+        resources.contains("crumbs__here\" aria-current=\"page\">resources"),
+        "{resources}"
     );
 
     // A resource links back to both levels above it.
@@ -2691,6 +2715,125 @@ async fn the_home_page_is_the_feed_and_the_project_list_moved_to_its_own_url() {
     assert_eq!(
         to, "/?kind=resource.publish&project=krypton",
         "a bookmarked filter must survive the move"
+    );
+}
+
+/// Opening a project is that project's feed, not its resource list: the same
+/// reason `/` is the fleet feed rather than the project list.
+#[tokio::test]
+async fn entering_a_project_opens_its_activity_feed() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(&session, json!(["resource:write", "resource:read"]))
+        .await;
+
+    server
+        .post(
+            "/v1/projects/krypton/resources:inline",
+            Some(&token),
+            json!({
+                "kind": "doc",
+                "slug": "notes",
+                "title": "Release notes",
+                "contents": [],
+            }),
+        )
+        .await;
+    server
+        .post(
+            "/v1/projects/other/resources:inline",
+            Some(&token),
+            json!({
+                "kind": "doc",
+                "slug": "elsewhere",
+                "title": "Somewhere else",
+                "contents": [],
+            }),
+        )
+        .await;
+
+    let (status, html) = server.get_html("/p/krypton", Some(&session)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        html.contains("feed__day\">today"),
+        "the project home must be a feed: {html}"
+    );
+    assert!(
+        html.contains("Release notes"),
+        "this project's publish must appear: {html}"
+    );
+    assert!(
+        !html.contains("Somewhere else"),
+        "another project's rows must not leak onto this feed: {html}"
+    );
+    assert!(
+        !html.contains("minted token") && !html.contains("signed in"),
+        "account events have no project and must stay off this feed: {html}"
+    );
+    assert!(
+        html.contains("href=\"/p/krypton\" class=\"on\" aria-current=\"page\">activity</a>"),
+        "activity is the current tab: {html}"
+    );
+    assert!(
+        html.contains("href=\"/p/krypton/resources\">resources</a>"),
+        "resources must be one click away: {html}"
+    );
+    assert!(
+        html.contains("href=\"/p/krypton/usage\">llm usage</a>"),
+        "usage must still be a peer tab: {html}"
+    );
+    assert!(
+        !html.contains("class=\"feed__project\""),
+        "a project feed should not stamp its own name on every row: {html}"
+    );
+    assert!(
+        html.contains("href=\"/p/krypton?kind=resource.publish\""),
+        "kind chips filter this project in place: {html}"
+    );
+    assert!(
+        !html.contains("href=\"/?kind="),
+        "project chips must not bounce to the fleet feed: {html}"
+    );
+
+    let (status, resources) = server
+        .get_html("/p/krypton/resources", Some(&session))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        resources.contains("Release notes") && resources.contains("class=\"grid\""),
+        "the listing moved to /resources: {resources}"
+    );
+    assert!(
+        resources.contains(
+            "href=\"/p/krypton/resources\" class=\"on\" aria-current=\"page\">resources</a>"
+        ),
+        "resources is the current tab: {resources}"
+    );
+
+    // A bookmarked resource-kind filter on the old project URL still lands
+    // on the list it named.
+    let (status, to) = server
+        .get_location_cookie(
+            "/p/krypton?kind=review",
+            Some(&format!("xenon_session={session}")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(to, "/p/krypton/resources?kind=review");
+
+    let (status, filtered) = server
+        .get_html("/p/krypton?kind=resource.publish", Some(&session))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        filtered.contains("Release notes"),
+        "an event-kind filter stays on the project feed: {filtered}"
+    );
+    assert!(
+        filtered.contains("href=\"/p/krypton?kind=resource.publish\"")
+            && filtered.contains("class=\"on\">resource.publish</a>"),
+        "the event-kind chip must stay selected: {filtered}"
     );
 }
 
@@ -3199,7 +3342,9 @@ async fn the_kind_filter_chips_carry_their_counts() {
     push(&server, &token, "artifact", "art-b").await;
     push(&server, &token, "review", "rev-a").await;
 
-    let (status, html) = server.get_html("/p/krypton", Some(&session)).await;
+    let (status, html) = server
+        .get_html("/p/krypton/resources", Some(&session))
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         html.contains(">all<span class=\"kinds__n\">3</span>"),
@@ -3222,7 +3367,7 @@ async fn the_kind_filter_chips_carry_their_counts() {
 
     // Filtering narrows the list below, never the legend above it.
     let (status, filtered) = server
-        .get_html("/p/krypton?kind=review", Some(&session))
+        .get_html("/p/krypton/resources?kind=review", Some(&session))
         .await;
     assert_eq!(status, StatusCode::OK);
     assert!(
@@ -3254,6 +3399,10 @@ async fn the_project_page_links_to_its_usage_ledger() {
     assert!(
         html.contains("/p/p.one/usage"),
         "the project page must offer its usage ledger: {html}"
+    );
+    assert!(
+        html.contains("/p/p.one/resources"),
+        "the project page must offer its resources: {html}"
     );
 }
 

@@ -302,6 +302,33 @@ struct ActivityTemplate {
     /// Cursor for the next (older) page; `None` when this is the last one.
     older: Option<i64>,
     query_base: String,
+    /// Path the pager and (on the project feed) the kind chips address.
+    feed_path: String,
+    /// The fleet feed names the project on each row; a project's own feed
+    /// does not — the reader is already there.
+    show_project: bool,
+}
+
+#[derive(askama::Template)]
+#[template(path = "project_activity.html")]
+struct ProjectActivityTemplate {
+    title: String,
+    css_url: String,
+    app_js_url: String,
+    crumbs: Vec<Crumb>,
+    nav: Nav,
+    project: String,
+    initial: String,
+    hue: u16,
+    github_repo: Option<String>,
+    tab: &'static str,
+    kinds: &'static [&'static str],
+    kind_filter: Option<String>,
+    days: Vec<FeedDay>,
+    older: Option<i64>,
+    query_base: String,
+    feed_path: String,
+    show_project: bool,
 }
 
 /// One day heading and the rows under it. Grouping is done server-side because
@@ -339,6 +366,8 @@ struct ProjectTemplate {
     hue: u16,
     /// `owner/repo` when the project is linked to GitHub.
     github_repo: Option<String>,
+    /// Which of the project's pages this is, for the tab row.
+    tab: &'static str,
     kinds: Vec<KindTab>,
     /// Sum over `kinds`, for the "all" chip.
     total: i64,
@@ -450,6 +479,8 @@ struct UsageTemplate {
     /// The monogram "logo" beside the project name.
     initial: String,
     hue: u16,
+    /// Which of the project's pages this is, for the tab row.
+    tab: &'static str,
     days: i64,
     ranges: &'static [RangeChoice],
     /// The only number the template branches on. Everything else it prints is
@@ -730,24 +761,12 @@ async fn usage_page(
         title,
         css_url,
         app_js_url,
-        crumbs: vec![
-            Crumb {
-                label: "projects".to_string(),
-                href: Some("/projects".to_string()),
-            },
-            Crumb {
-                label: project.clone(),
-                href: Some(format!("/p/{project}")),
-            },
-            Crumb {
-                label: "usage".to_string(),
-                href: None,
-            },
-        ],
+        crumbs: project_crumbs(&project, Some("usage")),
         nav,
         initial: logo_initial(&project),
         hue: logo_hue(&project),
         project,
+        tab: "usage",
         days,
         turns: totals.turns,
         currency: totals.currency.clone(),
@@ -846,6 +865,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/settings/tokens", get(tokens_page))
         .route("/admin", get(admin_page))
         .route("/p/{project}", get(project_page))
+        .route("/p/{project}/resources", get(project_resources_page))
         .route("/p/{project}/usage", get(usage_page))
         .route("/r/{project}/{kind}/{*slug}", get(resource_page))
 }
@@ -1026,14 +1046,39 @@ async fn activity_page(
     )?;
     drop(conn);
 
+    let (days, older) = group_feed(&events);
+    // Filters have to survive paging, so the "older" link rebuilds them.
+    let query_base = feed_query_base(project_filter.as_deref(), kind_filter.as_deref());
+
+    let (title, css_url, app_js_url) = chrome("activity");
+    Ok(render(&ActivityTemplate {
+        title,
+        css_url,
+        app_js_url,
+        crumbs: Vec::new(),
+        nav,
+        kinds: &event::KINDS,
+        kind_filter,
+        project_filter,
+        days,
+        older,
+        query_base,
+        feed_path: "/".to_string(),
+        show_project: true,
+    })?
+    .into_response())
+}
+
+/// Day groups and the "older" cursor, shared by the fleet feed and a project's
+/// own feed so the two pages cannot disagree about where a day starts.
+fn group_feed(events: &[event::EventView]) -> (Vec<FeedDay>, Option<i64>) {
     let older = (events.len() as i64 >= FEED_PAGE)
         .then(|| events.last().map(|e| e.seq))
         .flatten();
-
     let now = crate::util::now();
     let today = now.div_euclid(86_400);
     let mut days: Vec<FeedDay> = Vec::new();
-    for e in &events {
+    for e in events {
         let day = e.created_at.div_euclid(86_400);
         let label = match today - day {
             0 => "today".to_string(),
@@ -1049,31 +1094,44 @@ async fn activity_page(
             }),
         }
     }
+    (days, older)
+}
 
-    // Filters have to survive paging, so the "older" link rebuilds them.
+fn feed_query_base(project: Option<&str>, kind: Option<&str>) -> String {
     let mut query_base = String::new();
-    if let Some(p) = &project_filter {
+    if let Some(p) = project {
         query_base.push_str(&format!("project={}&", urlencode(p)));
     }
-    if let Some(k) = &kind_filter {
+    if let Some(k) = kind {
         query_base.push_str(&format!("kind={}&", urlencode(k)));
     }
+    query_base
+}
 
-    let (title, css_url, app_js_url) = chrome("activity");
-    Ok(render(&ActivityTemplate {
-        title,
-        css_url,
-        app_js_url,
-        crumbs: Vec::new(),
-        nav,
-        kinds: &event::KINDS,
-        kind_filter,
-        project_filter,
-        days,
-        older,
-        query_base,
-    })?
-    .into_response())
+/// Breadcrumb trail under a project. The project itself is the last crumb on
+/// its home page (activity); a deeper page links back to that home.
+fn project_crumbs(project: &str, here: Option<&str>) -> Vec<Crumb> {
+    let mut crumbs = vec![Crumb {
+        label: "projects".to_string(),
+        href: Some("/projects".to_string()),
+    }];
+    match here {
+        None => crumbs.push(Crumb {
+            label: project.to_string(),
+            href: None,
+        }),
+        Some(leaf) => {
+            crumbs.push(Crumb {
+                label: project.to_string(),
+                href: Some(format!("/p/{}", urlencode(project))),
+            });
+            crumbs.push(Crumb {
+                label: leaf.to_string(),
+                href: None,
+            });
+        }
+    }
+    crumbs
 }
 
 /// One event as a sentence: actor, verb, object. The verb is the only place the
@@ -1139,9 +1197,85 @@ fn detail_str(e: &event::EventView, key: &str) -> Option<String> {
 #[derive(Deserialize)]
 pub struct ProjectQuery {
     kind: Option<String>,
+    cursor: Option<i64>,
 }
 
+/// Opening a project answers *what happened here* the same way `/` answers
+/// that for the fleet. Resources live one click away at `/resources`.
+///
+/// A leftover `?kind=` of a resource kind (the old filter on this URL)
+/// answers 303 to `/resources?kind=`, so a bookmarked chip still lands on
+/// the list it named.
 async fn project_page(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Path(project): Path<String>,
+    Query(query): Query<ProjectQuery>,
+) -> AppResult<Response> {
+    let (actor, nav) = viewer(&state, &headers, &uri);
+    if !has_browser_session(&actor) {
+        return Ok(redirect_to_login());
+    }
+    if let Some(kind) = query.kind.as_deref() {
+        if RESOURCE_KINDS.contains(&kind) {
+            return Ok(Redirect::to(&format!(
+                "/p/{}/resources?kind={}",
+                urlencode(&project),
+                urlencode(kind)
+            ))
+            .into_response());
+        }
+    }
+
+    let kind_filter = query
+        .kind
+        .as_deref()
+        .filter(|k| event::PROJECT_KINDS.contains(k))
+        .map(str::to_string);
+
+    let conn = state.db();
+    let project_id = readable_project(&conn, actor.as_ref(), &project)?;
+    let github_repo = project_github_repo(&conn, &project_id)?;
+    let events = event::query(
+        &conn,
+        actor.as_ref(),
+        &event::Query {
+            project: Some(&project),
+            kind: kind_filter.as_deref(),
+            cursor: query.cursor,
+            limit: FEED_PAGE,
+        },
+    )?;
+    drop(conn);
+
+    let (days, older) = group_feed(&events);
+    let query_base = feed_query_base(None, kind_filter.as_deref());
+    let feed_path = format!("/p/{}", urlencode(&project));
+    let (title, css_url, app_js_url) = chrome(&project);
+    Ok(render(&ProjectActivityTemplate {
+        title,
+        css_url,
+        app_js_url,
+        crumbs: project_crumbs(&project, None),
+        nav,
+        initial: logo_initial(&project),
+        hue: logo_hue(&project),
+        github_repo,
+        project: project.clone(),
+        tab: "activity",
+        kinds: &event::PROJECT_KINDS,
+        kind_filter,
+        days,
+        older,
+        query_base,
+        feed_path,
+        show_project: false,
+    })?
+    .into_response())
+}
+
+async fn project_resources_page(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     uri: axum::http::Uri,
@@ -1202,26 +1336,18 @@ async fn project_page(
         .collect::<Result<Vec<_>, _>>()?;
 
     let now = crate::util::now();
-    let (title, css_url, app_js_url) = chrome(&project);
+    let (title, css_url, app_js_url) = chrome(&format!("{project} resources"));
     Ok(render(&ProjectTemplate {
         title,
         css_url,
         app_js_url,
-        crumbs: vec![
-            Crumb {
-                label: "projects".to_string(),
-                href: Some("/projects".to_string()),
-            },
-            Crumb {
-                label: project.clone(),
-                href: None,
-            },
-        ],
+        crumbs: project_crumbs(&project, Some("resources")),
         nav,
         initial: logo_initial(&project),
         hue: logo_hue(&project),
         github_repo,
         project: project.clone(),
+        tab: "resources",
         kinds,
         total,
         kind_filter: kind_filter.map(|k| k.to_string()),
@@ -2163,6 +2289,20 @@ mod tests {
             view: View::Card,
             here: here.into(),
         }
+    }
+
+    #[test]
+    fn project_crumbs_link_back_to_the_project_home() {
+        let home = project_crumbs("krypton", None);
+        assert_eq!(home.len(), 2);
+        assert_eq!(home[0].href.as_deref(), Some("/projects"));
+        assert!(home[1].href.is_none());
+        assert_eq!(home[1].label, "krypton");
+
+        let leaf = project_crumbs("krypton", Some("resources"));
+        assert_eq!(leaf[1].href.as_deref(), Some("/p/krypton"));
+        assert!(leaf[2].href.is_none());
+        assert_eq!(leaf[2].label, "resources");
     }
 
     #[test]

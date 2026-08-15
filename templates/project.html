@@ -12,14 +12,7 @@
   {%- endif %}
 </div>
 
-{#- The project's two pages. Usage (spec 214) is a second body of data under the
-    same project, not a sixth resource kind, so it is a page switch ABOVE the
-    kind filter rather than another chip inside it — a chip in that row would
-    read as "show me usage resources", which is not a thing that exists. -#}
-<div class="tabs">
-  <a href="/p/{{ project }}" class="on" aria-current="page">resources</a>
-  <a href="/p/{{ project }}/usage">llm usage</a>
-</div>
+{% include "projecttabs.html" %}
 
 {#- Each filter wears the hue of the kind it selects, so this row doubles as the
     legend for the chips on the cards below. "all" keeps the accent: it is a
@@ -28,10 +21,10 @@
 <div class="kinds">
   {#- No line break between the label and its count: a newline inside the anchor
       is a rendered space, and the gap is the stylesheet's to set. -#}
-  <a href="/p/{{ project }}"
+  <a href="/p/{{ project }}/resources"
      class="{% if kind_filter.is_none() %}on{% endif %}">all<span class="kinds__n">{{ total }}</span></a>
   {%- for k in kinds %}
-  <a href="/p/{{ project }}?kind={{ k.name }}"
+  <a href="/p/{{ project }}/resources?kind={{ k.name }}"
      class="k--{{ k.name }}{% if kind_filter.as_deref() == Some(k.name) %} on{% endif %}{% if k.count == 0 %} is-empty{% endif %}">{{ k.name }}<span class="kinds__n">{{ k.count }}</span></a>
   {%- endfor %}
 </div>

@@ -244,8 +244,9 @@ agent-authored and untrusted.
 
 ## Browse
 
-`/` the activity feed · `/projects` the project list · `/p/<project>` resources,
-filterable by kind · `/p/<project>/usage` the LLM usage ledger ·
+`/` the activity feed · `/projects` the project list · `/p/<project>` the
+project's activity · `/p/<project>/resources` its resources, filterable by kind ·
+`/p/<project>/usage` the LLM usage ledger ·
 `/r/<project>/<kind>/<slug>` the resource ·
 `/r/<project>/<kind>/<slug>/@<seq>` a pinned revision · `/register` · `/login` ·
 `POST /logout` · `/settings/tokens` · `/admin` (admin session).
@@ -254,9 +255,12 @@ The feed is the home page: opening the server answers *what has happened* before
 *what exists*. `/activity` was its address until then and answers `303` to `/`,
 query string intact, so a bookmarked filter still lands on the rows it named.
 
-A project has two pages — its resources and its usage — and each links to the
-other. They are peers, not a filter of one another: usage is a second body of
-data under the same project, not a sixth resource kind.
+A project has three pages — its activity, its resources, and its usage — and
+each links to the others. Opening the project is the activity page, for the
+same reason `/` is the fleet feed. They are peers, not a filter of one another:
+usage is a second body of data under the same project, not a sixth resource
+kind. A leftover `/p/<project>?kind=<resource-kind>` (the old filter on the
+project URL) answers `303` to `/p/<project>/resources?kind=`.
 
 Every browse page except `/login` and `/register` requires a session: without
 one they answer `303` to `/login`. `/admin` is 404 to a signed-in non-admin, so

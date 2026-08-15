@@ -212,6 +212,10 @@ Server-rendered, no JavaScript, matching the rest of the browse UI:
 - Nav gains `activity` beside `projects`. An anonymous visitor is sent to `/login`; once the feed
   became the home page, `activity` moved to the front of the nav and the project list took
   `/projects`.
+- **Per-project feed** — `/p/<project>` is that project's activity (the same rows `?project=`
+  would show on `/`, minus the project chip on each line). Resources moved to
+  `/p/<project>/resources`. The filter row offers only the four project-audience kinds;
+  account events have no project and would be empty chips.
 
 ### Retention
 

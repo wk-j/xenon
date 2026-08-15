@@ -344,7 +344,8 @@ None. No new environment variables; assets are compile-time.
 - **Agent-authored SVG** (`review:svg`) — refuse-whole-on-denylist (see Stage 1); a refused
   diagram renders as escaped source in a code block rather than being injected.
 - **Offline / air-gapped deployment** — nothing loads from a CDN, by construction.
-- **Existing permalinks** — `/p/{project}` and `/r/{project}/{kind}/{*slug}` keep their **URLs**
+- **Existing permalinks** — `/p/{project}` (now the project's activity; resources live at
+  `/p/{project}/resources`) and `/r/{project}/{kind}/{*slug}` keep their **URL prefixes**
   stable; the fragment routes are additive. Rendered markup is *not* byte-stable — changing the
   HTML body of a `review.md` is the entire point of stage 1. An earlier draft promised
   byte-for-byte, which contradicted the feature.

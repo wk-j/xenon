@@ -20,12 +20,7 @@
   <h2 class="meta">{{ project }}</h2>
 </div>
 
-{#- The project's two pages, each reachable from the other. Usage used to be
-    linkable only from a URL someone had already been told about. -#}
-<div class="tabs">
-  <a href="/p/{{ project }}">resources</a>
-  <a href="/p/{{ project }}/usage" class="on" aria-current="page">llm usage</a>
-</div>
+{% include "projecttabs.html" %}
 
 <div class="kinds kinds--events">
   {%- for r in ranges %}

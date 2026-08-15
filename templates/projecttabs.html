@@ -1,0 +1,10 @@
+{#- A project's three pages. They are peers — activity is what happened,
+    resources are what exists, usage is a second body of data (spec 214) —
+    so this sits ABOVE any kind filter rather than as another chip inside
+    it. A chip in that row would read as "show me usage resources", which
+    is not a thing that exists. -#}
+<div class="tabs">
+  <a href="/p/{{ project }}"{% if tab == "activity" %} class="on" aria-current="page"{% endif %}>activity</a>
+  <a href="/p/{{ project }}/resources"{% if tab == "resources" %} class="on" aria-current="page"{% endif %}>resources</a>
+  <a href="/p/{{ project }}/usage"{% if tab == "usage" %} class="on" aria-current="page"{% endif %}>llm usage</a>
+</div>

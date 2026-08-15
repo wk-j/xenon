@@ -34,8 +34,9 @@ Open <http://localhost:8787/register>. **The first account becomes the admin** �
 do this before the instance is reachable from anywhere else. After that,
 registration needs an admin-issued invite unless `XENON_ALLOW_SIGNUP=1`.
 
-`/` is the activity feed, `/projects` the project list, and `/admin` — first
-account only — users, projects and the next invite.
+`/` is the activity feed, `/projects` the project list, `/p/<project>` that
+project's activity, and `/admin` — first account only — users, projects and the
+next invite.
 
 Mint a token at `/settings/tokens`, then point Krypton at it:
 
