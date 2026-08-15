@@ -1,9 +1,9 @@
 // Rendering for a revision's `meta` — the payload of a resource that has no files.
 //
 // The browse UI was built around files: `resource_page` picks one file from the
-// revision and renders its bytes. That covers four of the five kinds, whose meta
-// is a breadcrumb (`{"source": ".krypton/reviews"}`) and whose substance is on
-// disk. `attention` is the exception — a judgement item has NO on-disk form, so
+// revision and renders its bytes. That covers every kind but one, whose meta is
+// a breadcrumb (`{"source": ".krypton/reviews"}`, `{"date": "2026-08-15"}`) and
+// whose substance is on disk. `attention` is the exception — a judgement item has NO on-disk form, so
 // its question, the option the lane chose, the rationale, the trade-offs and the
 // stated uncertainty all travel in `meta` and nowhere else. Without this module
 // such a resource renders as its title over "this revision has no files", which

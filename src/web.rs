@@ -1366,6 +1366,41 @@ async fn project_resources_page(
     .into_response())
 }
 
+/// The file a bundle should open on, per kind. First match wins.
+///
+/// Krypton names these deliberately and they are not the alphabetical first:
+/// `daily` carries `brief.md` (a lane's narration) beside `note.md` (derived
+/// from records), and the record has to be what a reader lands on. `review`
+/// bundles carry an `assets/` directory that sorts ahead of both markdown files.
+const ENTRY_FILES: [(&str, &[&str]); 3] = [
+    ("daily", &["note.md"]),
+    ("review", &["review.md", "response.md"]),
+    ("analysis", &["root-cause.md", "fix-plan.md"]),
+];
+
+/// Which file the resource page shows when the reader has not named one.
+///
+/// Files arrive `ORDER BY path`, so a blind `.first()` opens a review bundle on
+/// `assets/diagram.png` and a day on its narration rather than its record.
+/// Preference order: the kind's own entry file, then any top-level markdown,
+/// then whatever is first — never nothing when the revision has files.
+fn entry_file<'a>(
+    kind: &str,
+    files: &'a [crate::api::FileEntry],
+) -> Option<&'a crate::api::FileEntry> {
+    if let Some((_, wanted)) = ENTRY_FILES.iter().find(|(k, _)| *k == kind) {
+        for want in *wanted {
+            if let Some(hit) = files.iter().find(|f| f.path == *want) {
+                return Some(hit);
+            }
+        }
+    }
+    files
+        .iter()
+        .find(|f| f.path.ends_with(".md") && !f.path.contains('/'))
+        .or_else(|| files.first())
+}
+
 #[derive(Deserialize)]
 pub struct ResourceQuery {
     file: Option<String>,
@@ -1451,7 +1486,7 @@ async fn resource_page(
         .file
         .as_deref()
         .and_then(|want| revision.files.iter().find(|f| f.path == want))
-        .or_else(|| revision.files.first());
+        .or_else(|| entry_file(&detail.summary.kind, &revision.files));
 
     // A resource with no files is not an empty resource. `attention` has no
     // on-disk form at all — its question, the option the lane chose, and the
@@ -2289,6 +2324,45 @@ mod tests {
             view: View::Card,
             here: here.into(),
         }
+    }
+
+    fn files(paths: &[&str]) -> Vec<crate::api::FileEntry> {
+        paths
+            .iter()
+            .map(|p| crate::api::FileEntry {
+                path: (*p).to_string(),
+                sha256: "0".repeat(64),
+                size: 1,
+                content_type: "text/markdown".into(),
+            })
+            .collect()
+    }
+
+    /// Files arrive sorted by path, which is the wrong default twice over: a
+    /// day would open on the lane's narration and a review on an asset image.
+    #[test]
+    fn a_bundle_opens_on_its_record_not_on_whatever_sorts_first() {
+        // `brief.md` < `note.md`, but the record is what a reader lands on.
+        let day = files(&["brief.md", "note.md"]);
+        assert_eq!(entry_file("daily", &day).unwrap().path, "note.md");
+        // A day with no narration still opens on its note.
+        let bare = files(&["note.md"]);
+        assert_eq!(entry_file("daily", &bare).unwrap().path, "note.md");
+
+        // `assets/…` sorts ahead of both markdown files in a review bundle.
+        let review = files(&["assets/diagram.png", "response.md", "review.md"]);
+        assert_eq!(entry_file("review", &review).unwrap().path, "review.md");
+        // A review the human has not answered yet has no `review.md`? It does —
+        // but if a bundle is ever missing it, the next named file wins.
+        let partial = files(&["assets/diagram.png", "response.md"]);
+        assert_eq!(entry_file("review", &partial).unwrap().path, "response.md");
+
+        // An unlisted kind falls back to top-level markdown, then to anything.
+        let doc = files(&["assets/x.png", "guide.md"]);
+        assert_eq!(entry_file("doc", &doc).unwrap().path, "guide.md");
+        let html = files(&["page.html"]);
+        assert_eq!(entry_file("artifact", &html).unwrap().path, "page.html");
+        assert!(entry_file("daily", &[]).is_none());
     }
 
     #[test]

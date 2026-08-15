@@ -273,6 +273,7 @@ single `--k` variable, so a component reads `var(--k)` and never names a kind:
 | `review` | `oklch(.78 .13 300)` violet | |
 | `analysis` | `oklch(.78 .14 340)` magenta | |
 | `attention` | `oklch(.80 .13 55)` amber | the only kind that is a request to a human, so it sits warm |
+| `daily` | `oklch(.80 .12 150)` green | the one kind that is a record of *time* rather than of work; sits alone in the empty 55–195 arc so a day never reads as a near-miss of another kind |
 
 Rules that keep this a legend rather than decoration:
 

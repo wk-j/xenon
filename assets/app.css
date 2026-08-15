@@ -17,6 +17,7 @@
 --k-analysis:oklch(.78 .14 340);
 --k-doc:oklch(.80 .11 250);
 --k-attention:oklch(.80 .13 55);
+--k-daily:oklch(.80 .12 150);
 --k:var(--accent);
 /* Project monogram lightness. Tracks the kind-hue band so a logo that lands
    near green or red still reads as identity, not a verdict. */
@@ -34,12 +35,14 @@ html[data-theme="light"]{--bg:#f4f5f7;--fg:#1e2329;--text:#474d57;--muted:#707a8
 --sev-ink-blocking:oklch(.45 .16 22);
 --k-artifact:oklch(.45 .11 195);--k-review:oklch(.45 .13 300);
 --k-analysis:oklch(.45 .14 340);--k-doc:oklch(.45 .11 250);
---k-attention:oklch(.48 .13 55);--logo-l:.48;color-scheme:light}
+--k-attention:oklch(.48 .13 55);--k-daily:oklch(.45 .12 150);
+--logo-l:.48;color-scheme:light}
 .k--artifact{--k:var(--k-artifact)}
 .k--review{--k:var(--k-review)}
 .k--analysis{--k:var(--k-analysis)}
 .k--doc{--k:var(--k-doc)}
 .k--attention{--k:var(--k-attention)}
+.k--daily{--k:var(--k-daily)}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 var(--sans)}
 a{color:var(--accent);text-decoration:none}

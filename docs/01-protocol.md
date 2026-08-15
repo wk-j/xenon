@@ -136,8 +136,9 @@ owned by the token's user.
 }
 ```
 
-`kind` ∈ `artifact | review | analysis | doc | attention`. `slug` may contain
-slashes (an analysis bundle is `owner/repo/number`). `files` may be empty.
+`kind` ∈ `artifact | review | analysis | doc | attention | daily`. `slug` may
+contain slashes (an analysis bundle is `owner/repo/number`); a `daily` slug is
+the bare local date `YYYY-MM-DD`. `files` may be empty.
 
 → `202 { resource_id, revision_id, missing: [...], unchanged: false, url }` —
 `missing` lists only the digests to upload.

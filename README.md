@@ -1,8 +1,8 @@
 # Xenon
 
 Central resource server for [Krypton](https://github.com/wk-j/krypton) work
-product — HTML artifacts, review bundles, issue analyses, docs, and attention
-flags.
+product — HTML artifacts, review bundles, issue analyses, docs, attention flags,
+and daily notes.
 
 Krypton keeps that work in a gitignored `.krypton/` tree, reachable only on
 loopback while the app is running. Xenon makes it durable and readable when
@@ -108,9 +108,10 @@ keep issued certificates across reinstalls.
 ## Concepts
 
 A **resource** is `{ project, kind, slug, title, meta, files[] }`. Kinds:
-`artifact`, `review`, `analysis`, `doc`, `attention`. Bundles and single files
-differ only in file count; `attention` has no files and carries everything in
-`meta`.
+`artifact`, `review`, `analysis`, `doc`, `attention`, `daily`. Bundles and single
+files differ only in file count; `attention` has no files and carries everything
+in `meta`, and `daily` is one developer day — `note.md` derived from records plus
+an optional `brief.md` a lane narrated from it.
 
 Blobs are **immutable** (sha256). Resources change by **revision**: each push
 appends a sealed revision, the latest is head, and an interrupted push never

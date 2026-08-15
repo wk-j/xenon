@@ -825,6 +825,69 @@ async fn inline_upload_handles_a_fileless_attention_record() {
         .is_empty());
 }
 
+/// Krypton spec 224. A day carries the derived record and, optionally, a lane's
+/// narration of it. Both are markdown and `brief.md` sorts first, so the page
+/// must open on the record — the narration is a reading of it, not the thing.
+#[tokio::test]
+async fn a_daily_note_publishes_and_opens_on_its_record_not_its_narration() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(&session, json!(["resource:write", "resource:read"]))
+        .await;
+
+    let res = server
+        .post(
+            "/v1/projects/krypton/resources:inline",
+            Some(&token),
+            json!({
+                "kind": "daily",
+                "slug": "2026-08-15",
+                "title": "2026-08-15 (เสาร์)",
+                "meta": { "date": "2026-08-15", "hasBrief": true, "handEdited": false },
+                "contents": [
+                    {
+                        "path": "brief.md",
+                        "content_base64": data_encoding::BASE64.encode(b"# narration\n\nthe day in prose\n"),
+                        "content_type": "text/markdown",
+                    },
+                    {
+                        "path": "note.md",
+                        "content_base64": data_encoding::BASE64.encode(b"# 2026-08-15\n\n52 turns, 5 commits\n"),
+                        "content_type": "text/markdown",
+                    },
+                ],
+            }),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::CREATED, "{:?}", res.body);
+
+    let detail = server
+        .get(
+            &format!("/v1/resources/{}", res.s("resource_id")),
+            Some(&token),
+        )
+        .await;
+    let files = detail.body["revision"]["files"].as_array().unwrap();
+    assert_eq!(files.len(), 2);
+    assert_eq!(detail.body["revision"]["meta"]["hasBrief"], true);
+
+    // The browse page defaults to the record; the narration stays one click away.
+    let (status, html) = server
+        .get_html("/r/krypton/daily/2026-08-15", Some(&session))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("52 turns, 5 commits"), "opens on the record");
+    assert!(!html.contains("the day in prose"), "not on the narration");
+    assert!(html.contains("brief.md"), "narration is still reachable");
+
+    let (status, html) = server
+        .get_html("/r/krypton/daily/2026-08-15?file=brief.md", Some(&session))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("the day in prose"));
+}
+
 #[tokio::test]
 async fn inline_upload_stores_file_bodies() {
     let server = Server::start();

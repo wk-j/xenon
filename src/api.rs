@@ -31,7 +31,16 @@ use crate::util::{
 
 /// Resource kinds Krypton can publish. Anything else is rejected at the edge so
 /// a typo cannot create a phantom kind that no browse surface renders.
-pub const RESOURCE_KINDS: [&str; 5] = ["artifact", "review", "analysis", "doc", "attention"];
+pub const RESOURCE_KINDS: [&str; 6] = [
+    "artifact",
+    "review",
+    "analysis",
+    "doc",
+    "attention",
+    // Krypton spec 224: one developer day — `note.md` derived from records, plus
+    // an optional `brief.md` a lane narrated from it.
+    "daily",
+];
 
 const MAX_FILES_PER_RESOURCE: usize = 512;
 const MAX_TITLE_LEN: usize = 300;
