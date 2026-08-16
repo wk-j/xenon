@@ -46,6 +46,28 @@
     is escaped or refused upstream — agent bytes never arrive here raw. -#}
 {{ content|safe }}
 
+{#- A day's cited work, resolved to something the reader can open. Internal
+    rows stay on this origin; issue rows leave for GitHub. Hrefs were built
+    here, so askama's escaping is the one encoding. -#}
+{%- if !followups.is_empty() %}
+<section class="refs">
+  <h3 class="refs__title">follow up</h3>
+  <ul class="refs__list">
+    {%- for r in followups %}
+    <li>
+      {%- if r.internal %}
+      <span class="pill k k--{{ r.kind }} refs__kind">{{ r.kind }}</span>
+      <a href="{{ r.href }}">{{ r.label }}</a>
+      {%- else %}
+      <span class="pill refs__kind">{{ r.kind }}</span>
+      <a href="{{ r.href }}" target="_blank" rel="noopener noreferrer">{{ r.label }}</a>
+      {%- endif %}
+    </li>
+    {%- endfor %}
+  </ul>
+</section>
+{%- endif %}
+
 {#- Every external destination the content mentions, gathered in one place —
     an issue cited three paragraphs apart is still one row here. Hrefs were
     unescaped when collected, so askama's escaping here is the one encoding. -#}

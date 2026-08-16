@@ -417,6 +417,10 @@ struct ResourceTemplate {
     /// External destinations mentioned in `content`, for the references
     /// section. Empty renders no section.
     references: Vec<RefItem>,
+    /// A day's cited work, gathered so the reader can open the next thing
+    /// without hunting the project. Empty on every other kind, and on a day
+    /// that names nothing we can resolve.
+    followups: Vec<FollowItem>,
 }
 
 struct FileTab {
@@ -1447,6 +1451,15 @@ async fn resource_page(
         .ok_or_else(|| AppError::not_found("no such resource"))?;
 
     let detail = load_resource_detail(&conn, actor.as_ref(), &resource_id, seq)?;
+    // A day is an index of the work, not just a page of prose. Sibling
+    // resources in this project are what a cited #N or `repo#N` can resolve
+    // to; loaded here while the connection is still open, matched later
+    // against the rendered HTML so the section cannot disagree with the body.
+    let follow_siblings = if detail.summary.kind == "daily" {
+        load_sibling_resources(&conn, &project_id)?
+    } else {
+        Vec::new()
+    };
     drop(conn);
 
     let crumbs = vec![
@@ -1485,6 +1498,7 @@ async fn resource_page(
             files: Vec::new(),
             content: "<p class=\"empty\">no committed revision</p>".to_string(),
             references: Vec::new(),
+            followups: Vec::new(),
         })?
         .into_response());
     };
@@ -1537,7 +1551,22 @@ async fn resource_page(
         })
         .collect();
 
-    let references = collect_references(&content);
+    let followups = if detail.summary.kind == "daily" {
+        collect_followups(
+            &content,
+            &project,
+            github_repo_for_project(&project, github_repo.as_deref()).as_deref(),
+            &follow_siblings,
+        )
+    } else {
+        Vec::new()
+    };
+    // A GitHub issue that the follow-up section already lists stays out of
+    // references so the two indexes do not repeat each other.
+    let references = collect_references(&content)
+        .into_iter()
+        .filter(|r| !followups.iter().any(|f| f.href == r.href))
+        .collect();
 
     Ok(render(&ResourceTemplate {
         title,
@@ -1557,6 +1586,7 @@ async fn resource_page(
         files,
         content,
         references,
+        followups,
     })?
     .into_response())
 }
@@ -1939,6 +1969,33 @@ struct RefItem {
     kind: &'static str,
 }
 
+/// One row of a day's follow-up section: a cited issue or a Xenon resource
+/// that issue (or a distinctive token) resolves to. `internal` rows stay on
+/// this origin; the others are GitHub.
+struct FollowItem {
+    href: String,
+    label: String,
+    kind: String,
+    internal: bool,
+}
+
+/// A committed sibling in the same project. Loaded once per daily page and
+/// matched in memory — the set is the same 500-row cap the project listing
+/// uses, and LIKE-matching `#12` against `#120` in SQL is the bug this
+/// avoids.
+struct Sibling {
+    kind: String,
+    slug: String,
+    title: String,
+}
+
+/// A `#N`, `repo#N`, or `owner/repo#N` the day's prose named.
+struct IssueMention {
+    /// `owner/repo`, a short repo name, or `None` for a bare `#N`.
+    repo: Option<String>,
+    number: String,
+}
+
 /// Gathers the external destinations out of rendered content, in document
 /// order, one row per URL however often it is mentioned. Internal hrefs (file
 /// tabs, revisions, other resources) are navigation, not references, so only
@@ -1992,6 +2049,352 @@ fn collect_references(html: &str) -> Vec<RefItem> {
         refs.push(RefItem { href, label, kind });
     }
     refs
+}
+
+fn load_sibling_resources(conn: &Connection, project_id: &str) -> AppResult<Vec<Sibling>> {
+    let mut stmt = conn.prepare(
+        "SELECT kind, slug, title FROM resource
+         WHERE project_id = ?1 AND head_revision IS NOT NULL AND kind != 'daily'
+         ORDER BY updated_at DESC LIMIT 500",
+    )?;
+    let rows = stmt
+        .query_map([project_id], |r| {
+            Ok(Sibling {
+                kind: r.get(0)?,
+                slug: r.get(1)?,
+                title: r.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// The GitHub `owner/repo` a day's bare `#N` should resolve against: the
+/// project's stored link if it has one, otherwise the `owner.repo` slug
+/// Krypton derives from a git remote.
+fn github_repo_for_project(project_slug: &str, stored: Option<&str>) -> Option<String> {
+    if let Some(repo) = stored.filter(|s| !s.is_empty()) {
+        return Some(repo.to_string());
+    }
+    let (owner, repo) = project_slug.split_once('.')?;
+    crate::util::normalize_github_repo(&format!("{owner}/{repo}"))
+}
+
+/// Issues and Xenon resources the day's prose names, in document order, one
+/// row per destination. A day that cites nothing resolvable returns empty —
+/// the section is not a listing of the project.
+fn collect_followups(
+    html: &str,
+    project: &str,
+    github_repo: Option<&str>,
+    siblings: &[Sibling],
+) -> Vec<FollowItem> {
+    let mentions = extract_issue_mentions(html);
+    let text = strip_tags(html);
+    let mut items = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for mention in &mentions {
+        let mut matched: Vec<&Sibling> = siblings
+            .iter()
+            .filter(|s| resource_matches(s, mention))
+            .collect();
+        matched.sort_by_key(|s| kind_rank(&s.kind));
+
+        if let Some((href, label)) = github_issue_href(mention, github_repo, &matched) {
+            push_followup(
+                &mut items,
+                &mut seen,
+                FollowItem {
+                    href,
+                    label,
+                    kind: "issue".into(),
+                    internal: false,
+                },
+            );
+        }
+        for sib in matched {
+            push_followup(
+                &mut items,
+                &mut seen,
+                FollowItem {
+                    href: format!("/r/{project}/{}/{}", sib.kind, sib.slug),
+                    label: sib.title.clone(),
+                    kind: sib.kind.clone(),
+                    internal: true,
+                },
+            );
+        }
+    }
+
+    // An attention flag the day names by a distinctive token (`pol_id`)
+    // rather than an issue number still belongs in the index.
+    for sib in siblings
+        .iter()
+        .filter(|s| s.kind == "attention" && attention_token_hit(&s.title, &text))
+    {
+        push_followup(
+            &mut items,
+            &mut seen,
+            FollowItem {
+                href: format!("/r/{project}/{}/{}", sib.kind, sib.slug),
+                label: sib.title.clone(),
+                kind: sib.kind.clone(),
+                internal: true,
+            },
+        );
+    }
+    items
+}
+
+fn push_followup(
+    items: &mut Vec<FollowItem>,
+    seen: &mut std::collections::HashSet<String>,
+    item: FollowItem,
+) {
+    if seen.insert(item.href.clone()) {
+        items.push(item);
+    }
+}
+
+fn kind_rank(kind: &str) -> u8 {
+    match kind {
+        "analysis" => 0,
+        "review" => 1,
+        "artifact" => 2,
+        "attention" => 3,
+        "doc" => 4,
+        _ => 9,
+    }
+}
+
+fn github_issue_href(
+    mention: &IssueMention,
+    default_repo: Option<&str>,
+    matches: &[&Sibling],
+) -> Option<(String, String)> {
+    let repo = match mention.repo.as_deref() {
+        Some(named) if named.contains('/') => crate::util::normalize_github_repo(named)?,
+        Some(_) => matches
+            .iter()
+            .find_map(|s| analysis_repo_and_number(&s.slug).map(|(repo, _)| repo.to_string()))
+            .or_else(|| {
+                let owner = default_repo?.split('/').next()?;
+                let short = mention.repo.as_deref()?;
+                crate::util::normalize_github_repo(&format!("{owner}/{short}"))
+            })?,
+        None => default_repo?.to_string(),
+    };
+    Some((
+        format!("https://github.com/{repo}/issues/{}", mention.number),
+        format!("{repo}#{}", mention.number),
+    ))
+}
+
+fn resource_matches(sib: &Sibling, mention: &IssueMention) -> bool {
+    if let Some(repo) = mention.repo.as_deref() {
+        if sib.kind == "analysis" {
+            if let Some((slug_repo, n)) = analysis_repo_and_number(&sib.slug) {
+                if n == mention.number && repo_fits(slug_repo, repo) {
+                    return true;
+                }
+            }
+        }
+        return title_cites(&sib.title, &mention.number)
+            && (sib.slug.contains(repo)
+                || sib
+                    .title
+                    .to_ascii_lowercase()
+                    .contains(&repo.to_ascii_lowercase()));
+    }
+    if sib.kind == "analysis" {
+        if let Some((_, n)) = analysis_repo_and_number(&sib.slug) {
+            if n == mention.number {
+                return true;
+            }
+        }
+    }
+    title_cites(&sib.title, &mention.number)
+}
+
+/// `owner/repo/N` — the analysis slug shape. Anything else is not an issue
+/// permalink and must not steal a `#N` match.
+fn analysis_repo_and_number(slug: &str) -> Option<(&str, &str)> {
+    let (repo, n) = slug.rsplit_once('/')?;
+    if n.is_empty() || !n.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    repo.contains('/').then_some((repo, n))
+}
+
+fn repo_fits(slug_repo: &str, mention_repo: &str) -> bool {
+    if slug_repo == mention_repo {
+        return true;
+    }
+    if mention_repo.contains('/') {
+        return false;
+    }
+    let last = slug_repo.rsplit('/').next().unwrap_or(slug_repo);
+    last == mention_repo || (mention_repo.len() >= 6 && last.ends_with(&format!("-{mention_repo}")))
+}
+
+fn title_cites(title: &str, number: &str) -> bool {
+    let needle = format!("#{number}");
+    let bytes = title.as_bytes();
+    let mut from = 0;
+    while let Some(at) = title[from..].find(&needle) {
+        let i = from + at;
+        let after = i + needle.len();
+        let next_ok = after >= bytes.len() || !bytes[after].is_ascii_alphanumeric();
+        if next_ok {
+            return true;
+        }
+        from = after;
+    }
+    false
+}
+
+fn attention_token_hit(title: &str, haystack: &str) -> bool {
+    snake_case_tokens(title)
+        .into_iter()
+        .any(|tok| tok.len() >= 5 && haystack.contains(tok))
+}
+
+fn snake_case_tokens(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    let mut out = Vec::new();
+    while i < bytes.len() {
+        if bytes[i].is_ascii_alphabetic() {
+            let start = i;
+            let mut has_us = false;
+            i += 1;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                if bytes[i] == b'_' {
+                    has_us = true;
+                }
+                i += 1;
+            }
+            if has_us && i - start >= 5 {
+                out.push(&text[start..i]);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// `#N` / `repo#N` / `owner/repo#N` in document order, skipping fenced and
+/// inline code so a path like `docs/cr/…/1048/…` or a `#define` is not a
+/// citation. Deduped by (repo, number).
+fn extract_issue_mentions(html: &str) -> Vec<IssueMention> {
+    let mut out = Vec::new();
+    for_each_visible_text(html, |text| scan_issue_mentions(text, &mut out));
+    out
+}
+
+fn for_each_visible_text(html: &str, mut visit: impl FnMut(&str)) {
+    // `<a>` stays visible: a cited `#12` that `link_issue_refs` already
+    // wrapped is still a mention the follow-up section should list.
+    const OPAQUE: [(&str, &str); 2] = [("pre", "</pre>"), ("code", "</code>")];
+    let mut rest = html;
+    while let Some(at) = rest.find('<') {
+        if at > 0 {
+            visit(&rest[..at]);
+        }
+        rest = &rest[at..];
+        let opaque_close = OPAQUE.iter().find_map(|(name, close)| {
+            let boundary = rest.as_bytes().get(1 + name.len());
+            (rest[1..].starts_with(name) && matches!(boundary, Some(b' ' | b'>'))).then_some(*close)
+        });
+        let copied = match opaque_close {
+            Some(close) => rest.find(close).map(|i| i + close.len()),
+            None => rest.find('>').map(|i| i + 1),
+        };
+        match copied {
+            Some(end) => rest = &rest[end..],
+            None => return,
+        }
+    }
+    if !rest.is_empty() {
+        visit(rest);
+    }
+}
+
+fn scan_issue_mentions(text: &str, out: &mut Vec<IssueMention>) {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'#' {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            let nlen = j - i - 1;
+            let next_ok = j >= bytes.len() || !bytes[j].is_ascii_alphanumeric();
+            if (1..=10).contains(&nlen) && next_ok {
+                if let Some((repo, start)) = repo_prefix_before(&text[..i]) {
+                    let prev_ok = start == 0 || {
+                        let p = bytes[start - 1];
+                        !p.is_ascii_alphanumeric() && p != b'&' && p != b'#' && p != b'/'
+                    };
+                    if prev_ok {
+                        let mention = IssueMention {
+                            repo,
+                            number: text[i + 1..j].to_string(),
+                        };
+                        if !out
+                            .iter()
+                            .any(|m| m.repo == mention.repo && m.number == mention.number)
+                        {
+                            out.push(mention);
+                        }
+                        i = j;
+                        continue;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+}
+
+/// The repo name glued to the `#`, if any, and the byte index where that
+/// name starts. A one-letter prefix (`C#`) is a language, not a repo.
+fn repo_prefix_before(before: &str) -> Option<(Option<String>, usize)> {
+    let bytes = before.as_bytes();
+    let mut k = bytes.len();
+    while k > 0 && is_repo_char(bytes[k - 1]) {
+        k -= 1;
+    }
+    if k == bytes.len() {
+        return Some((None, bytes.len()));
+    }
+    let tail = &before[k..];
+    let first = tail.chars().next()?;
+    if !first.is_ascii_alphabetic() {
+        return Some((None, bytes.len()));
+    }
+    if tail.len() == 1 {
+        // `C#12` is not a repository citation.
+        return None;
+    }
+    if k > 0 && bytes[k - 1] == b'/' {
+        let mut o = k - 1;
+        while o > 0 && is_repo_char(bytes[o - 1]) {
+            o -= 1;
+        }
+        let owner = &before[o..k - 1];
+        if !owner.is_empty() && owner.chars().next()?.is_ascii_alphabetic() {
+            return Some((Some(format!("{owner}/{tail}")), o));
+        }
+    }
+    Some((Some(tail.to_string()), k))
+}
+
+fn is_repo_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')
 }
 
 /// `owner/repo#123` for a GitHub issue or pull-request URL, or None for
@@ -2584,6 +2987,129 @@ mod tests {
                 ("link", "diff", "https://github.com/wk-j/xenon/pull/5/files"),
             ]
         );
+    }
+
+    #[test]
+    fn issue_mentions_come_from_prose_not_code() {
+        let html = concat!(
+            "<p>see #12, mapping-tool#18, and bcircle/tli-api-service#1101.</p>",
+            "<p>again #12</p>",
+            "<code>#99</code><pre><code>other-tool#7\n</code></pre>",
+            "<p>C#12 and a#3 stay text, (#21) counts.</p>",
+        );
+        let mentions = extract_issue_mentions(html);
+        let found: Vec<(Option<&str>, &str)> = mentions
+            .iter()
+            .map(|m| (m.repo.as_deref(), m.number.as_str()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (None, "12"),
+                (Some("mapping-tool"), "18"),
+                (Some("bcircle/tli-api-service"), "1101"),
+                (None, "21"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_days_citations_resolve_to_followups() {
+        let html = concat!(
+            "<p>closed #77 and mapping-tool#18, leftover #1099,</p>",
+            "<p>still need to resolve the pol_id attention flag</p>",
+        );
+        let siblings = vec![
+            Sibling {
+                kind: "analysis".into(),
+                slug: "acme/tli-mapping-tool/18".into(),
+                title: "Lombok pin".into(),
+            },
+            Sibling {
+                kind: "analysis".into(),
+                slug: "acme/widgets/1".into(),
+                title: "unrelated".into(),
+            },
+            Sibling {
+                kind: "artifact".into(),
+                slug: "hm-1/art-1".into(),
+                title: "#1099 — leftover".into(),
+            },
+            Sibling {
+                kind: "attention".into(),
+                slug: "jdg-1".into(),
+                title: "ช่องโหว่ pol_id หาย".into(),
+            },
+        ];
+        let rows = collect_followups(html, "acme.widgets", Some("acme/widgets"), &siblings);
+        let view: Vec<(&str, &str, &str)> = rows
+            .iter()
+            .map(|r| (r.kind.as_str(), r.label.as_str(), r.href.as_str()))
+            .collect();
+        assert_eq!(
+            view,
+            vec![
+                (
+                    "issue",
+                    "acme/widgets#77",
+                    "https://github.com/acme/widgets/issues/77"
+                ),
+                (
+                    "issue",
+                    "acme/tli-mapping-tool#18",
+                    "https://github.com/acme/tli-mapping-tool/issues/18"
+                ),
+                (
+                    "analysis",
+                    "Lombok pin",
+                    "/r/acme.widgets/analysis/acme/tli-mapping-tool/18"
+                ),
+                (
+                    "issue",
+                    "acme/widgets#1099",
+                    "https://github.com/acme/widgets/issues/1099"
+                ),
+                (
+                    "artifact",
+                    "#1099 — leftover",
+                    "/r/acme.widgets/artifact/hm-1/art-1"
+                ),
+                (
+                    "attention",
+                    "ช่องโหว่ pol_id หาย",
+                    "/r/acme.widgets/attention/jdg-1"
+                ),
+            ]
+        );
+        assert!(rows.iter().all(|r| r.internal == (r.kind != "issue")));
+        // A #N does not steal a longer number, and an uncited analysis stays out.
+        assert!(!view.iter().any(|(_, label, _)| *label == "unrelated"));
+    }
+
+    #[test]
+    fn a_project_slug_from_a_git_remote_names_its_github_repo() {
+        assert_eq!(
+            github_repo_for_project("bcircle.tli-api-service", None).as_deref(),
+            Some("bcircle/tli-api-service")
+        );
+        assert_eq!(
+            github_repo_for_project("krypton", None),
+            None,
+            "a bare slug is not owner/repo"
+        );
+        assert_eq!(
+            github_repo_for_project("krypton", Some("wk-j/krypton")).as_deref(),
+            Some("wk-j/krypton"),
+            "a stored link wins"
+        );
+    }
+
+    #[test]
+    fn title_cites_needs_the_whole_number() {
+        assert!(title_cites("#1099 — leftover", "1099"));
+        assert!(!title_cites("#1099 — leftover", "109"));
+        assert!(!title_cites("#1099 — leftover", "10990"));
+        assert!(title_cites("see (#7)", "7"));
     }
 
     #[test]

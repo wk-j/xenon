@@ -894,6 +894,124 @@ async fn a_daily_note_publishes_and_opens_on_its_record_not_its_narration() {
     assert!(html.contains("the day in prose"));
 }
 
+/// A published day names the work; the page gathers those names into a
+/// follow-up index the reader can open — GitHub issues plus matching Xenon
+/// resources — rather than leaving `#1101` and `mapping-tool#18` as plain
+/// text. A day that cites nothing has no section.
+#[tokio::test]
+async fn a_daily_note_collects_cited_work_into_a_followup_section() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(&session, json!(["resource:write", "resource:read"]))
+        .await;
+
+    for (kind, slug, title) in [
+        ("analysis", "acme/tli-mapping-tool/18", "Lombok pin"),
+        ("analysis", "acme/widgets/1", "unrelated leftover"),
+        ("artifact", "hm-1/art-1", "#1099 — leftover"),
+        ("attention", "jdg-1", "ช่องโหว่ pol_id หาย"),
+    ] {
+        let res = server
+            .post(
+                "/v1/projects/acme.widgets/resources:inline",
+                Some(&token),
+                json!({
+                    "kind": kind,
+                    "slug": slug,
+                    "title": title,
+                    "contents": [],
+                }),
+            )
+            .await;
+        assert_eq!(
+            res.status,
+            StatusCode::CREATED,
+            "{kind} {slug}: {:?}",
+            res.body
+        );
+    }
+
+    let md = "\
+# 2026-08-16\n\
+\n\
+closed #77 and mapping-tool#18, leftover #1099.\n\
+still need to resolve the pol_id attention flag.\n";
+    let day = server
+        .post(
+            "/v1/projects/acme.widgets/resources:inline",
+            Some(&token),
+            json!({
+                "kind": "daily",
+                "slug": "2026-08-16",
+                "title": "2026-08-16",
+                "contents": [{
+                    "path": "daily.md",
+                    "content_base64": data_encoding::BASE64.encode(md.as_bytes()),
+                    "content_type": "text/markdown",
+                }],
+            }),
+        )
+        .await;
+    assert_eq!(day.status, StatusCode::CREATED, "{:?}", day.body);
+
+    let (status, page) = server
+        .get_html("/r/acme.widgets/daily/2026-08-16", Some(&session))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let follow = page
+        .split("<section class=\"refs\">")
+        .nth(1)
+        .and_then(|s| s.split("</section>").next())
+        .expect("a follow-up section");
+    assert!(follow.contains("follow up"), "{follow}");
+    assert!(
+        follow.contains("https://github.com/acme/widgets/issues/77"),
+        "bare #N uses the project slug as owner/repo: {follow}"
+    );
+    assert!(
+        follow.contains("/r/acme.widgets/analysis/acme/tli-mapping-tool/18"),
+        "short repo#N matches the analysis: {follow}"
+    );
+    assert!(
+        follow.contains("/r/acme.widgets/artifact/hm-1/art-1"),
+        "title #N matches the artifact: {follow}"
+    );
+    assert!(
+        follow.contains("/r/acme.widgets/attention/jdg-1"),
+        "a distinctive token matches the attention flag: {follow}"
+    );
+    assert!(
+        !follow.contains("unrelated leftover"),
+        "an uncited analysis stays out: {follow}"
+    );
+
+    let quiet = server
+        .post(
+            "/v1/projects/acme.widgets/resources:inline",
+            Some(&token),
+            json!({
+                "kind": "daily",
+                "slug": "2026-08-15",
+                "title": "2026-08-15",
+                "contents": [{
+                    "path": "daily.md",
+                    "content_base64": data_encoding::BASE64.encode(b"# quiet\n\nno citations today\n"),
+                    "content_type": "text/markdown",
+                }],
+            }),
+        )
+        .await;
+    assert_eq!(quiet.status, StatusCode::CREATED, "{:?}", quiet.body);
+    let (_, quiet_page) = server
+        .get_html("/r/acme.widgets/daily/2026-08-15", Some(&session))
+        .await;
+    assert!(
+        !quiet_page.contains("follow up"),
+        "a day that names nothing has no section: {quiet_page}"
+    );
+}
+
 #[tokio::test]
 async fn inline_upload_stores_file_bodies() {
     let server = Server::start();

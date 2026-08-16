@@ -213,9 +213,9 @@ box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--l) 30%,transparent)}
    it sits quiet in the muted tone until pointed at. */
 .project-head__gh{font:11px/1.6 var(--mono);letter-spacing:.04em;color:var(--muted)}
 .project-head__gh:hover{color:var(--accent);text-decoration:none}
-/* The references section is an index of where the content points, so it reads
-   like the meta rows do — mono, quiet — and stays out of the document's way
-   behind a border. */
+/* The references section (and the day's follow-up index, which reuses this
+   treatment) is an index of destinations, so it reads like the meta rows do
+   — mono, quiet — and stays out of the document's way behind a border. */
 .refs{border-top:1px solid var(--border);margin-top:24px;padding-top:12px}
 .refs__title{margin:0 0 8px;font:600 11px/1.6 var(--mono);letter-spacing:.04em;
 color:var(--muted);text-transform:lowercase}
