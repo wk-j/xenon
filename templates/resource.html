@@ -1,5 +1,11 @@
 {% extends "base.html" %}
 
+{% block page_script %}
+{%- if nav.is_admin %}
+<script src="{{ page_js_url }}" defer></script>
+{%- endif %}
+{% endblock %}
+
 {#- The kind class sits on a wrapper rather than only on the chip, so both things
     that belong to this resource — its chip and its open file tab — carry the one
     hue the reader has already learned from the project page. -#}
@@ -55,6 +61,16 @@
     {%- endfor %}
   </ul>
 </section>
+{%- endif %}
+
+{%- if nav.is_admin %}
+<p class="res__admin">
+  <button type="button" class="ghost" id="remove"
+    data-id="{{ resource_id }}"
+    data-title="{{ title }}"
+    data-project="{{ project }}">remove</button>
+</p>
+<p class="msg" id="m"></p>
 {%- endif %}
 
 {%- if revisions > 1 %}

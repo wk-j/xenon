@@ -63,6 +63,11 @@ const ASSETS: &[Asset] = &[
         body: include_str!("../assets/admin.js"),
         content_type: "text/javascript; charset=utf-8",
     },
+    Asset {
+        name: "resource.js",
+        body: include_str!("../assets/resource.js"),
+        content_type: "text/javascript; charset=utf-8",
+    },
 ];
 
 /// Short content hash per asset, computed once. It rides in the query string so
@@ -168,6 +173,7 @@ mod tests {
             // One icon, not the old pair of words; losing the rule leaves a
             // 11px button that underlines an SVG.
             ".theme svg",
+            ".ask",
             ".rv-finding",
             ".rv-steps",
             ".rv-chart",
@@ -228,12 +234,27 @@ mod tests {
         let app = ASSETS[index_of("app.js").unwrap()].body;
         assert!(app.contains("function xreq") || app.contains("xreq("));
         assert!(app.contains("function xfail"));
-        for page in ["login.js", "register.js", "tokens.js", "admin.js"] {
+        assert!(app.contains("function xask"));
+        for page in [
+            "login.js",
+            "register.js",
+            "tokens.js",
+            "admin.js",
+            "resource.js",
+        ] {
             let body = ASSETS[index_of(page).unwrap()].body;
             assert!(
                 body.contains("xreq(") || body.contains("xfail("),
                 "{page} should use the shared helpers"
             );
+            assert!(
+                !body.contains("confirm("),
+                "{page} must not use the browser confirm dialog"
+            );
         }
+        assert!(
+            !app.contains("confirm("),
+            "app.js must not use the browser confirm dialog"
+        );
     }
 }

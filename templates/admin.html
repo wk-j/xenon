@@ -6,7 +6,7 @@
 
 {% block content %}
 <h2>administration</h2>
-<p class="meta">every account on this instance, every project, and the invite codes that admit the next person. session only — a token cannot open this page.</p>
+<p class="meta">every account on this instance, every project, every resource, and the invite codes that admit the next person. session only — a token cannot open this page.</p>
 <p class="msg" id="m"></p>
 
 <h3 class="admin__h">users</h3>
@@ -24,6 +24,15 @@
 </tr></thead><tbody id="projects"></tbody></table>
 </div>
 <p class="empty" id="projects-none" hidden>no projects yet</p>
+
+<h3 class="admin__h">resources</h3>
+<p class="meta">remove takes the resource and its revisions off the instance. activity stays; file bytes stay until garbage collection.</p>
+<div class="scroll">
+<table class="data"><thead><tr>
+<th>project</th><th>kind</th><th>title</th><th>updated</th><th></th>
+</tr></thead><tbody id="resources"></tbody></table>
+</div>
+<p class="empty" id="resources-none" hidden>no resources yet</p>
 
 <h3 class="admin__h">invites</h3>
 <p class="meta">single use, seven days. the code is shown once, here, and never stored in the clear.</p>

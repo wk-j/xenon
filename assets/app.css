@@ -358,6 +358,14 @@ border-bottom:1px solid var(--border);padding:6px 8px}
 table.data td{border-bottom:1px solid var(--border);padding:6px 8px;color:var(--text)}
 table.data tr.is-disabled td{opacity:.55}
 .admin__h{margin:28px 0 8px;font:600 13px/1.4 var(--sans)}
+.res__admin{margin:20px 0 0;padding-top:16px;border-top:1px solid var(--border)}
+/* In-page confirm. Not a system dialog: it uses the same type and buttons as
+   the rest of the chrome, and cancel is the focused control. */
+.ask{position:fixed;left:20px;right:20px;bottom:20px;z-index:20;
+max-width:520px;margin:0 auto;background:var(--card);border:1px solid var(--border);
+border-radius:8px;padding:14px 16px}
+.ask__msg{margin:0 0 12px;font:12px/1.5 var(--mono);color:var(--text)}
+.ask__actions{display:flex;gap:8px;justify-content:flex-end}
 
 /* Page switch. A project's activity, resources, and usage ledger are three
    bodies of data under one project, so they are peers — not a filter of one

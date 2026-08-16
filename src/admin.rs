@@ -1,12 +1,13 @@
 // Xenon — instance administration.
 //
 // The first account to register is the admin. These routes are how that person
-// looks after the instance: every account, every project, the unused invites.
+// looks after the instance: every account, every project, every resource,
+// the unused invites.
 // Session only — a leaked integration token must not become a roster of users.
 
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
-use axum::routing::{get, patch};
+use axum::http::{HeaderMap, StatusCode};
+use axum::routing::{delete, get, patch};
 use axum::{Json, Router};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,8 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/v1/admin/users/{id}", patch(update_user))
         .route("/v1/admin/projects", get(list_projects))
         .route("/v1/admin/projects/{project}", patch(update_project))
+        .route("/v1/admin/resources", get(list_resources))
+        .route("/v1/admin/resources/{id}", delete(delete_resource))
         .route("/v1/admin/invites", get(list_invites))
 }
 
@@ -63,6 +66,24 @@ struct AdminInviteView {
     used_at: Option<i64>,
     created_by: UserRef,
     used_by: Option<UserRef>,
+}
+
+#[derive(Serialize)]
+struct ProjectRef {
+    id: String,
+    slug: String,
+}
+
+#[derive(Serialize)]
+struct AdminResourceView {
+    id: String,
+    kind: String,
+    slug: String,
+    title: String,
+    created_at: i64,
+    updated_at: i64,
+    revisions: i64,
+    project: ProjectRef,
 }
 
 #[derive(Deserialize)]
@@ -192,6 +213,48 @@ async fn update_project(
         .ok_or_else(|| AppError::not_found(format!("no project {project}")))
 }
 
+async fn list_resources(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> AppResult<Json<Vec<AdminResourceView>>> {
+    let conn = state.db();
+    require_admin_session(&conn, &headers)?;
+    Ok(Json(load_resources(&conn)?))
+}
+
+/// Take a resource off the instance. Revisions and file rows go with it;
+/// activity stays (its `resource_id` becomes NULL) and blobs stay until GC.
+/// Session-only, same as every other admin write: a leaked token must not
+/// become a delete button.
+async fn delete_resource(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> AppResult<StatusCode> {
+    state.tx(|tx| {
+        let actor = require_admin_session(tx, &headers)?;
+        let current =
+            load_resource(tx, &id)?.ok_or_else(|| AppError::not_found("no such resource"))?;
+        event::record(
+            tx,
+            event::New::project_scoped(
+                event::RESOURCE_REMOVE,
+                &event::actor_name(tx, &actor.user_id),
+                &current.title,
+            )
+            .by(&actor)
+            .in_project(&current.project.id, &current.project.slug)
+            .about_resource(&current.id)
+            .detail(serde_json::json!({
+                "kind": current.kind,
+                "slug": current.slug,
+            })),
+        )?;
+        tx.execute("DELETE FROM resource WHERE id = ?1", [&current.id])?;
+        Ok(StatusCode::NO_CONTENT)
+    })
+}
+
 async fn list_invites(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -296,6 +359,66 @@ fn load_project(conn: &Connection, slug: &str) -> AppResult<Option<AdminProjectV
                     id: r.get(6)?,
                     email: r.get(7)?,
                     display_name: r.get(8)?,
+                },
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn load_resources(conn: &Connection) -> AppResult<Vec<AdminResourceView>> {
+    let mut stmt = conn.prepare(
+        "SELECT r.id, r.kind, r.slug, r.title, r.created_at, r.updated_at,
+                (SELECT count(*) FROM revision v
+                 WHERE v.resource_id = r.id AND v.sealed_at IS NOT NULL),
+                p.id, p.slug
+         FROM resource r
+         JOIN project p ON p.id = r.project_id
+         ORDER BY r.updated_at DESC, r.slug",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(AdminResourceView {
+                id: r.get(0)?,
+                kind: r.get(1)?,
+                slug: r.get(2)?,
+                title: r.get(3)?,
+                created_at: r.get(4)?,
+                updated_at: r.get(5)?,
+                revisions: r.get(6)?,
+                project: ProjectRef {
+                    id: r.get(7)?,
+                    slug: r.get(8)?,
+                },
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+fn load_resource(conn: &Connection, id: &str) -> AppResult<Option<AdminResourceView>> {
+    conn.query_row(
+        "SELECT r.id, r.kind, r.slug, r.title, r.created_at, r.updated_at,
+                (SELECT count(*) FROM revision v
+                 WHERE v.resource_id = r.id AND v.sealed_at IS NOT NULL),
+                p.id, p.slug
+         FROM resource r
+         JOIN project p ON p.id = r.project_id
+         WHERE r.id = ?1",
+        [id],
+        |r| {
+            Ok(AdminResourceView {
+                id: r.get(0)?,
+                kind: r.get(1)?,
+                slug: r.get(2)?,
+                title: r.get(3)?,
+                created_at: r.get(4)?,
+                updated_at: r.get(5)?,
+                revisions: r.get(6)?,
+                project: ProjectRef {
+                    id: r.get(7)?,
+                    slug: r.get(8)?,
                 },
             })
         },

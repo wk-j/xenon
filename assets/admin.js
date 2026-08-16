@@ -37,7 +37,10 @@ async function loadUsers() {
       button.textContent = u.disabled_at ? 'enable' : 'disable';
       button.addEventListener('click', async () => {
         const next = !u.disabled_at;
-        if (next && !confirm('disable ' + u.email + '? they cannot sign in or use their tokens until enabled again.')) return;
+        if (next && !await xask(
+          'disable ' + u.email + '? they cannot sign in or use their tokens until enabled again.',
+          'disable',
+        )) return;
         const res = await xreq('PATCH', '/v1/admin/users/' + encodeURIComponent(u.id), { disabled: next });
         if (!res.ok) { fail(res, 'could not update the account'); return; }
         loadUsers();
@@ -80,6 +83,51 @@ async function loadProjects() {
       const next = !p.is_public;
       const res = await xreq('PATCH', '/v1/admin/projects/' + encodeURIComponent(p.slug), { is_public: next });
       if (!res.ok) { fail(res, 'could not update the project'); return; }
+      loadProjects();
+    });
+    td.append(button);
+    tr.append(td);
+    rows.append(tr);
+  }
+}
+
+async function loadResources() {
+  const r = await xreq('GET', '/v1/admin/resources');
+  if (!r.ok) { fail(r, 'could not load resources'); return; }
+  const resources = Array.isArray(r.data) ? r.data : [];
+  const rows = document.getElementById('resources');
+  rows.textContent = '';
+  document.getElementById('resources-none').hidden = resources.length > 0;
+  for (const res of resources) {
+    const tr = document.createElement('tr');
+    const project = document.createElement('td');
+    const projectLink = document.createElement('a');
+    projectLink.href = '/p/' + encodeURIComponent(res.project.slug);
+    projectLink.textContent = res.project.slug;
+    project.append(projectLink);
+    const title = document.createElement('td');
+    const titleLink = document.createElement('a');
+    titleLink.href = '/r/' + encodeURIComponent(res.project.slug) + '/' + res.kind + '/' + res.slug;
+    titleLink.textContent = res.title;
+    title.append(titleLink);
+    tr.append(
+      project,
+      cell(res.kind),
+      title,
+      cell(fmt(res.updated_at)),
+    );
+    const td = document.createElement('td');
+    const button = document.createElement('button');
+    button.className = 'ghost';
+    button.textContent = 'remove';
+    button.addEventListener('click', async () => {
+      if (!await xask(
+        'remove ' + res.title + '? it disappears from the project. this cannot be undone.',
+        'remove',
+      )) return;
+      const out = await xreq('DELETE', '/v1/admin/resources/' + encodeURIComponent(res.id));
+      if (!out.ok) { fail(out, 'could not remove the resource'); return; }
+      loadResources();
       loadProjects();
     });
     td.append(button);
@@ -144,6 +192,7 @@ async function load() {
   meId = me.data.user && me.data.user.id;
   await loadUsers();
   await loadProjects();
+  await loadResources();
   await loadInvites();
 }
 

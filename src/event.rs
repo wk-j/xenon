@@ -39,6 +39,7 @@ const MAX_SUBJECT: usize = 300;
 
 pub const RESOURCE_PUBLISH: &str = "resource.publish";
 pub const RESOURCE_REVISE: &str = "resource.revise";
+pub const RESOURCE_REMOVE: &str = "resource.remove";
 pub const PROJECT_CREATE: &str = "project.create";
 pub const ACCOUNT_REGISTER: &str = "account.register";
 pub const ACCOUNT_LOGIN: &str = "account.login";
@@ -53,9 +54,10 @@ pub const ACCOUNT_ENABLE: &str = "account.enable";
 pub const PROJECT_VISIBILITY: &str = "project.visibility";
 
 /// Every kind, in the order the filter row shows them.
-pub const KINDS: [&str; 14] = [
+pub const KINDS: [&str; 15] = [
     RESOURCE_PUBLISH,
     RESOURCE_REVISE,
+    RESOURCE_REMOVE,
     PROJECT_CREATE,
     PROJECT_VISIBILITY,
     ACCOUNT_REGISTER,
@@ -73,9 +75,10 @@ pub const KINDS: [&str; 14] = [
 /// Kinds that can appear on a project's own feed. Account rows have no
 /// `project_slug`, so they never match a project filter — listing them as
 /// chips would offer filters that are always empty.
-pub const PROJECT_KINDS: [&str; 4] = [
+pub const PROJECT_KINDS: [&str; 5] = [
     RESOURCE_PUBLISH,
     RESOURCE_REVISE,
+    RESOURCE_REMOVE,
     PROJECT_CREATE,
     PROJECT_VISIBILITY,
 ];

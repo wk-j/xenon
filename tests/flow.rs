@@ -88,6 +88,12 @@ impl Server {
             .await
     }
 
+    async fn delete(&self, path: &str, auth: Option<&str>) -> Res {
+        let mut req = Request::delete(path);
+        req = apply_auth(req, auth);
+        self.send(req.body(Body::empty()).unwrap()).await
+    }
+
     /// A browse-UI page as raw HTML. `send` parses JSON, which an HTML response
     /// is not, so the body has to be read separately here.
     async fn get_html(&self, path: &str, session: Option<&str>) -> (StatusCode, String) {
@@ -3539,7 +3545,12 @@ async fn admin_routes_require_an_admin_session() {
         .await;
     let (friend, _) = register_invited(&server, &session, "friend@example.com").await;
 
-    for path in ["/v1/admin/users", "/v1/admin/projects", "/v1/admin/invites"] {
+    for path in [
+        "/v1/admin/users",
+        "/v1/admin/projects",
+        "/v1/admin/resources",
+        "/v1/admin/invites",
+    ] {
         let anon = server.get(path, None).await;
         assert_eq!(anon.status, StatusCode::UNAUTHORIZED, "{path}");
 
@@ -3762,4 +3773,175 @@ async fn the_admin_page_is_only_for_an_admin_session() {
     );
     assert!(rows[0]["used_at"].as_i64().is_some());
     assert_eq!(rows[0]["used_by"]["email"], "friend@example.com");
+    assert!(
+        html.contains("id=\"resources\""),
+        "the admin page must list resources: {html}"
+    );
+}
+
+/// Removing a resource is an admin-session write. The row and its revisions
+/// go; the activity line stays; the same kind+slug can be published again.
+#[tokio::test]
+async fn an_admin_can_remove_a_resource() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let (friend_session, _) = register_invited(&server, &session, "friend@example.com").await;
+    let friend_token = server
+        .mint_token(&friend_session, json!(["resource:write", "resource:read"]))
+        .await;
+    let created = server
+        .post(
+            "/v1/projects/friends.notes/resources:inline",
+            Some(&friend_token),
+            json!({
+                "kind": "doc",
+                "slug": "notes",
+                "title": "notes",
+                "contents": [],
+            }),
+        )
+        .await;
+    assert!(created.status.is_success(), "{:?}", created.body);
+    let resource_id = created.s("resource_id");
+
+    let listed = server
+        .get("/v1/admin/resources", Some(&session_header(&session)))
+        .await;
+    assert_eq!(listed.status, StatusCode::OK, "{:?}", listed.body);
+    let rows = listed.body.as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], resource_id);
+    assert_eq!(rows[0]["title"], "notes");
+    assert_eq!(rows[0]["project"]["slug"], "friends.notes");
+
+    let member = server
+        .delete(
+            &format!("/v1/admin/resources/{resource_id}"),
+            Some(&session_header(&friend_session)),
+        )
+        .await;
+    assert_eq!(member.status, StatusCode::FORBIDDEN);
+    assert_eq!(member.s("error"), "admin_required");
+
+    let via_token = server
+        .delete(
+            &format!("/v1/admin/resources/{resource_id}"),
+            Some(&friend_token),
+        )
+        .await;
+    assert_eq!(via_token.status, StatusCode::FORBIDDEN);
+    assert_eq!(via_token.s("error"), "session_required");
+
+    let (page, html) = server
+        .get_html("/r/friends.notes/doc/notes", Some(&session))
+        .await;
+    assert_eq!(page, StatusCode::OK);
+    assert!(
+        html.contains("id=\"remove\"") && html.contains("resource.js"),
+        "an admin must see the remove control: {html}"
+    );
+    let (member_page, member_html) = server
+        .get_html("/r/friends.notes/doc/notes", Some(&friend_session))
+        .await;
+    assert_eq!(member_page, StatusCode::OK);
+    assert!(
+        !member_html.contains("id=\"remove\""),
+        "a member must not see the remove control: {member_html}"
+    );
+
+    let removed = server
+        .delete(
+            &format!("/v1/admin/resources/{resource_id}"),
+            Some(&session_header(&session)),
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
+
+    assert_eq!(
+        server
+            .get(
+                &format!("/v1/resources/{resource_id}"),
+                Some(&session_header(&session)),
+            )
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    let (gone, _) = server
+        .get_html("/r/friends.notes/doc/notes", Some(&session))
+        .await;
+    assert_eq!(gone, StatusCode::NOT_FOUND);
+
+    let again = server
+        .delete(
+            &format!("/v1/admin/resources/{resource_id}"),
+            Some(&session_header(&session)),
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND);
+
+    let empty = server
+        .get("/v1/admin/resources", Some(&session_header(&session)))
+        .await;
+    assert_eq!(empty.body.as_array().unwrap().len(), 0);
+
+    let feed = server
+        .get("/v1/activity", Some(&session_header(&session)))
+        .await;
+    let events = feed.body["events"].as_array().unwrap();
+    let remove = events
+        .iter()
+        .find(|e| e["kind"] == "resource.remove")
+        .expect("the removal is logged");
+    assert_eq!(remove["subject"], "notes");
+    assert_eq!(remove["project"], "friends.notes");
+    assert_eq!(remove["detail"]["kind"], "doc");
+    assert_eq!(remove["detail"]["slug"], "notes");
+    assert!(
+        remove["url"].is_null(),
+        "a removed resource has no permalink: {remove}"
+    );
+    let publish = events
+        .iter()
+        .find(|e| e["kind"] == "resource.publish")
+        .expect("the original publish stays");
+    assert!(
+        publish["url"].is_null(),
+        "the publish row keeps its text but loses the dead link: {publish}"
+    );
+
+    let republished = server
+        .post(
+            "/v1/projects/friends.notes/resources:inline",
+            Some(&friend_token),
+            json!({
+                "kind": "doc",
+                "slug": "notes",
+                "title": "notes",
+                "contents": [],
+            }),
+        )
+        .await;
+    assert!(
+        republished.status.is_success(),
+        "the same slug is free again: {:?}",
+        republished.body
+    );
+    assert_ne!(republished.s("resource_id"), resource_id);
+}
+
+/// A missing resource is 404 even for the admin — not an empty 204 that
+/// pretends the delete worked.
+#[tokio::test]
+async fn removing_an_unknown_resource_is_not_found() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let missing = server
+        .delete(
+            "/v1/admin/resources/res_nope",
+            Some(&session_header(&session)),
+        )
+        .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    assert_eq!(missing.s("error"), "not_found");
 }

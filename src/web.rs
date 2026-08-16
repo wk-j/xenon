@@ -400,12 +400,15 @@ struct ResourceTemplate {
     title: String,
     css_url: String,
     app_js_url: String,
+    page_js_url: String,
     crumbs: Vec<Crumb>,
     nav: Nav,
     byline: Option<Byline>,
     project: String,
     kind: String,
     slug: String,
+    /// Opaque id, for the admin remove button. Not shown.
+    resource_id: String,
     seq: i64,
     revisions: i64,
     pinned: bool,
@@ -1140,6 +1143,7 @@ fn feed_row(e: &event::EventView, now: i64) -> FeedRow {
     let (verb, resource_kind) = match e.kind.as_str() {
         event::RESOURCE_PUBLISH => ("published", detail_str(e, "kind")),
         event::RESOURCE_REVISE => ("revised", detail_str(e, "kind")),
+        event::RESOURCE_REMOVE => ("removed", detail_str(e, "kind")),
         event::PROJECT_CREATE => ("created project", None),
         event::ACCOUNT_REGISTER => ("registered", None),
         event::ACCOUNT_LOGIN => ("signed in as", None),
@@ -1460,18 +1464,21 @@ async fn resource_page(
         },
     ];
     let (title, css_url, app_js_url) = chrome(&detail.summary.title);
+    let page_js_url = assets::url("resource.js");
 
     let Some(revision) = detail.revision else {
         return Ok(render(&ResourceTemplate {
             title,
             css_url,
             app_js_url,
+            page_js_url,
             crumbs,
             nav,
             byline: None,
             project,
             kind: detail.summary.kind,
             slug: detail.summary.slug,
+            resource_id,
             seq: 0,
             revisions: 0,
             pinned: false,
@@ -1536,12 +1543,14 @@ async fn resource_page(
         title,
         css_url,
         app_js_url,
+        page_js_url,
         crumbs,
         nav,
         byline: byline_for(&revision),
         project,
         kind: detail.summary.kind,
         slug: detail.summary.slug,
+        resource_id,
         seq: revision.seq,
         revisions: detail.summary.revisions,
         pinned: seq.is_some(),

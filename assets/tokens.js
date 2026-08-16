@@ -20,7 +20,10 @@ async function load() {
     button.className = 'ghost';
     button.textContent = 'revoke';
     button.addEventListener('click', async () => {
-      if (!confirm('revoke ' + t.label + '? clients using it stop working immediately.')) return;
+      if (!await xask(
+        'revoke ' + t.label + '? clients using it stop working immediately.',
+        'revoke',
+      )) return;
       const r = await xreq('DELETE', '/v1/tokens/' + encodeURIComponent(t.id));
       if (!r.ok) { xfail(document.getElementById('m'), r, 'revoke failed'); return; }
       load();

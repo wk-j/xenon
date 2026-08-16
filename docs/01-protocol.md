@@ -87,6 +87,20 @@ for visibility, and there is no anonymous reader.
 A session-authenticated admin may also *read* any project through the ordinary
 browse and `/v1` read routes. A token never inherits that.
 
+### `GET /v1/admin/resources` · `DELETE /v1/admin/resources/{id}`
+
+List every resource on the instance, including those in private projects the
+admin does not own → `[{ id, kind, slug, title, created_at, updated_at,
+revisions, project }]`.
+
+Delete removes the resource and every revision. Activity rows stay (their
+`resource_id` becomes NULL; `subject` and `detail` were frozen at write time).
+Blob bytes stay on disk until an explicit GC. The same kind+slug may be
+published again afterwards — it is a new resource.
+
+→ `204`. Unknown id is `404`. Same session-and-admin gate as the other admin
+writes; a token is `403 session_required`.
+
 ### `GET /v1/admin/invites`
 
 List issued codes as metadata only — created/expires/used, who minted, who
@@ -226,7 +240,7 @@ the cursor is insert order, which is both the true order of a log and strictly m
 `next_cursor` is null on the last page. `limit` is 1..100, default 30.
 
 Rows are one of two audiences. A `project` row (`resource.publish`, `resource.revise`,
-`project.create`) is visible when its project is public or the caller owns it. An `account` row
+`resource.remove`, `project.create`) is visible when its project is public or the caller owns it. An `account` row
 (`account.register` · `login` · `login_failed` · `logout`, `token.create` · `token.revoke`,
 `invite.create` · `invite.claim`) is visible only to its own actor, and to an admin. A failed
 sign-in against an unknown email has no actor at all, so only an admin ever sees it — attaching it

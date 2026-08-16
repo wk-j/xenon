@@ -127,6 +127,7 @@ that loses rows when something is deleted is not a log.
 |---|---|---|---|---|
 | `resource.publish` | project | `seal_revision`, seq == 1 | resource title | `{kind, slug}` |
 | `resource.revise` | project | `seal_revision`, seq > 1 | resource title | `{kind, slug, seq}` |
+| `resource.remove` | project | admin `delete_resource` | resource title | `{kind, slug}` |
 | `project.create` | project | `resolve_or_create_project` | project slug | `{}` |
 | `project.visibility` | project | admin `update_project` | project slug | `{is_public}` |
 | `account.register` | account | `register` | email | `{ip, admin}` |
@@ -141,7 +142,7 @@ that loses rows when something is deleted is not a log.
 | `account.enable` | account | admin `update_user` | target email | `{user_id}` |
 
 **Reads are not recorded.** Every page view and every blob fetch would outnumber content events by
-orders of magnitude, turn a metadata database into a web log, and bury the fourteen rows above in
+orders of magnitude, turn a metadata database into a web log, and bury the fifteen rows above in
 noise. An access log belongs in the reverse proxy. This is the one decision most worth overturning
 if the intent was an audit trail rather than a feed — say so and it becomes a separate table with
 its own retention, not extra rows in this one.
