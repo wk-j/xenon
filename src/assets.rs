@@ -166,6 +166,9 @@ mod tests {
             // button and "list" laid out exactly like "cards".
             ".viewswitch",
             ".grid--list",
+            // Follow-up / references chips share one column so `issue` and
+            // `attention` start their labels at the same x.
+            ".refs__kind{flex:0 0 8.4em",
             // The chrome template emits these two clusters; without the rules
             // destinations and account tools collapse back into one row.
             ".nav__go",

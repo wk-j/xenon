@@ -1010,6 +1010,49 @@ still need to resolve the pol_id attention flag.\n";
         !quiet_page.contains("follow up"),
         "a day that names nothing has no section: {quiet_page}"
     );
+
+    // The same index sits on every kind. An attention flag that names #1099
+    // and pol_id must list the matching work — and must not list itself.
+    let flag = server
+        .post(
+            "/v1/projects/acme.widgets/resources:inline",
+            Some(&token),
+            json!({
+                "kind": "attention",
+                "slug": "jdg-pol",
+                "title": "ช่องโหว่ pol_id หาย — แก้เฉพาะ UWM หรือทั้งสี่กลุ่ม?",
+                "meta": {
+                    "chosen": "แก้ #1101 แล้วเปิด #1099 เป็นงานแยก",
+                    "rationale": "matches leftover #1099",
+                    "reversibility": "reversible",
+                },
+                "contents": [],
+            }),
+        )
+        .await;
+    assert_eq!(flag.status, StatusCode::CREATED, "{:?}", flag.body);
+    let (status, att) = server
+        .get_html("/r/acme.widgets/attention/jdg-pol", Some(&session))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let att_follow = att
+        .split("<section class=\"refs\">")
+        .nth(1)
+        .and_then(|s| s.split("</section>").next())
+        .expect("an attention flag also has a follow-up section");
+    assert!(att_follow.contains("follow up"), "{att_follow}");
+    assert!(
+        att_follow.contains("https://github.com/acme/widgets/issues/1099"),
+        "{att_follow}"
+    );
+    assert!(
+        att_follow.contains("/r/acme.widgets/artifact/hm-1/art-1"),
+        "{att_follow}"
+    );
+    assert!(
+        !att_follow.contains("/attention/jdg-pol"),
+        "a page is not a follow-up of itself: {att_follow}"
+    );
 }
 
 #[tokio::test]
@@ -1873,19 +1916,30 @@ async fn external_links_collect_into_a_references_section() {
     let (_, page) = server
         .get_html("/r/krypton/doc/docs/refs.md", Some(&session))
         .await;
-    let refs = page
-        .split("<section class=\"refs\">")
-        .nth(1)
+    let mut sections = page.split("<section class=\"refs\">").skip(1);
+    let follow = sections
+        .next()
+        .and_then(|s| s.split("</section>").next())
+        .expect("a follow-up section");
+    let refs = sections
+        .next()
         .and_then(|s| s.split("</section>").next())
         .expect("a references section");
 
+    assert!(
+        follow.contains("follow up") && follow.contains(">wk-j/xenon#7</a>"),
+        "the cited issue is the follow-up row: {follow}"
+    );
     assert_eq!(
         refs.matches("https://example.com/docs").count(),
         1,
         "cited twice, listed once: {refs}"
     );
     assert!(refs.contains(">the docs</a>"), "{refs}");
-    assert!(refs.contains(">wk-j/xenon#7</a>"), "the issue row: {refs}");
+    assert!(
+        !refs.contains("issues/7"),
+        "an issue already in follow-up is not repeated: {refs}"
+    );
     assert!(
         !refs.contains("?file="),
         "internal links are not references: {refs}"

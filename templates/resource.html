@@ -46,8 +46,8 @@
     is escaped or refused upstream — agent bytes never arrive here raw. -#}
 {{ content|safe }}
 
-{#- A day's cited work, resolved to something the reader can open. Internal
-    rows stay on this origin; issue rows leave for GitHub. Hrefs were built
+{#- Cited work, resolved to something the reader can open. Internal rows
+    stay on this origin; issue rows leave for GitHub. Hrefs were built
     here, so askama's escaping is the one encoding. -#}
 {%- if !followups.is_empty() %}
 <section class="refs">

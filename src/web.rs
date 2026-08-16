@@ -417,9 +417,8 @@ struct ResourceTemplate {
     /// External destinations mentioned in `content`, for the references
     /// section. Empty renders no section.
     references: Vec<RefItem>,
-    /// A day's cited work, gathered so the reader can open the next thing
-    /// without hunting the project. Empty on every other kind, and on a day
-    /// that names nothing we can resolve.
+    /// Cited work gathered so the reader can open the next thing without
+    /// hunting the project. Empty when the body names nothing we can resolve.
     followups: Vec<FollowItem>,
 }
 
@@ -1451,15 +1450,16 @@ async fn resource_page(
         .ok_or_else(|| AppError::not_found("no such resource"))?;
 
     let detail = load_resource_detail(&conn, actor.as_ref(), &resource_id, seq)?;
-    // A day is an index of the work, not just a page of prose. Sibling
-    // resources in this project are what a cited #N or `repo#N` can resolve
-    // to; loaded here while the connection is still open, matched later
-    // against the rendered HTML so the section cannot disagree with the body.
-    let follow_siblings = if detail.summary.kind == "daily" {
-        load_sibling_resources(&conn, &project_id)?
-    } else {
-        Vec::new()
-    };
+    // Sibling resources in this project are what a cited #N or `repo#N` can
+    // resolve to. Loaded here while the connection is still open, matched
+    // later against the rendered HTML so the section cannot disagree with
+    // the body. The page itself is not a sibling of itself.
+    let follow_siblings = load_sibling_resources(
+        &conn,
+        &project_id,
+        &detail.summary.kind,
+        &detail.summary.slug,
+    )?;
     drop(conn);
 
     let crumbs = vec![
@@ -1551,16 +1551,13 @@ async fn resource_page(
         })
         .collect();
 
-    let followups = if detail.summary.kind == "daily" {
-        collect_followups(
-            &content,
-            &project,
-            github_repo_for_project(&project, github_repo.as_deref()).as_deref(),
-            &follow_siblings,
-        )
-    } else {
-        Vec::new()
-    };
+    let followups = collect_followups(
+        &content,
+        &detail.summary.title,
+        &project,
+        github_repo_for_project(&project, github_repo.as_deref()).as_deref(),
+        &follow_siblings,
+    );
     // A GitHub issue that the follow-up section already lists stays out of
     // references so the two indexes do not repeat each other.
     let references = collect_references(&content)
@@ -1972,6 +1969,7 @@ struct RefItem {
 /// One row of a day's follow-up section: a cited issue or a Xenon resource
 /// that issue (or a distinctive token) resolves to. `internal` rows stay on
 /// this origin; the others are GitHub.
+#[derive(Debug)]
 struct FollowItem {
     href: String,
     label: String,
@@ -2051,14 +2049,20 @@ fn collect_references(html: &str) -> Vec<RefItem> {
     refs
 }
 
-fn load_sibling_resources(conn: &Connection, project_id: &str) -> AppResult<Vec<Sibling>> {
+fn load_sibling_resources(
+    conn: &Connection,
+    project_id: &str,
+    skip_kind: &str,
+    skip_slug: &str,
+) -> AppResult<Vec<Sibling>> {
     let mut stmt = conn.prepare(
         "SELECT kind, slug, title FROM resource
-         WHERE project_id = ?1 AND head_revision IS NOT NULL AND kind != 'daily'
+         WHERE project_id = ?1 AND head_revision IS NOT NULL
+           AND NOT (kind = ?2 AND slug = ?3)
          ORDER BY updated_at DESC LIMIT 500",
     )?;
     let rows = stmt
-        .query_map([project_id], |r| {
+        .query_map(rusqlite::params![project_id, skip_kind, skip_slug], |r| {
             Ok(Sibling {
                 kind: r.get(0)?,
                 slug: r.get(1)?,
@@ -2069,9 +2073,9 @@ fn load_sibling_resources(conn: &Connection, project_id: &str) -> AppResult<Vec<
     Ok(rows)
 }
 
-/// The GitHub `owner/repo` a day's bare `#N` should resolve against: the
-/// project's stored link if it has one, otherwise the `owner.repo` slug
-/// Krypton derives from a git remote.
+/// The GitHub `owner/repo` a bare `#N` should resolve against: the project's
+/// stored link if it has one, otherwise the `owner.repo` slug Krypton
+/// derives from a git remote.
 fn github_repo_for_project(project_slug: &str, stored: Option<&str>) -> Option<String> {
     if let Some(repo) = stored.filter(|s| !s.is_empty()) {
         return Some(repo.to_string());
@@ -2080,17 +2084,20 @@ fn github_repo_for_project(project_slug: &str, stored: Option<&str>) -> Option<S
     crate::util::normalize_github_repo(&format!("{owner}/{repo}"))
 }
 
-/// Issues and Xenon resources the day's prose names, in document order, one
-/// row per destination. A day that cites nothing resolvable returns empty —
-/// the section is not a listing of the project.
+/// Issues and Xenon resources the page names, in document order, one row
+/// per destination. A page that cites nothing resolvable returns empty —
+/// the section is not a listing of the project. `title` is scanned too:
+/// an artifact's only citation is often the `#N` in its heading.
 fn collect_followups(
     html: &str,
+    title: &str,
     project: &str,
     github_repo: Option<&str>,
     siblings: &[Sibling],
 ) -> Vec<FollowItem> {
-    let mentions = extract_issue_mentions(html);
-    let text = strip_tags(html);
+    let mut mentions = extract_issue_mentions(html);
+    scan_issue_mentions(title, &mut mentions);
+    let text = format!("{title} {}", strip_tags(html));
     let mut items = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
@@ -3041,7 +3048,7 @@ mod tests {
                 title: "ช่องโหว่ pol_id หาย".into(),
             },
         ];
-        let rows = collect_followups(html, "acme.widgets", Some("acme/widgets"), &siblings);
+        let rows = collect_followups(html, "", "acme.widgets", Some("acme/widgets"), &siblings);
         let view: Vec<(&str, &str, &str)> = rows
             .iter()
             .map(|r| (r.kind.as_str(), r.label.as_str(), r.href.as_str()))
@@ -3084,6 +3091,21 @@ mod tests {
         assert!(rows.iter().all(|r| r.internal == (r.kind != "issue")));
         // A #N does not steal a longer number, and an uncited analysis stays out.
         assert!(!view.iter().any(|(_, label, _)| *label == "unrelated"));
+
+        // An artifact often cites only in its title, with no body links at all.
+        let from_title = collect_followups(
+            "<p>open artifact</p>",
+            "#1099 — leftover",
+            "acme.widgets",
+            Some("acme/widgets"),
+            &siblings,
+        );
+        assert!(
+            from_title
+                .iter()
+                .any(|r| r.href.ends_with("/artifact/hm-1/art-1")),
+            "title #N still resolves: {from_title:?}"
+        );
     }
 
     #[test]

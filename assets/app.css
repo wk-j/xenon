@@ -222,7 +222,11 @@ color:var(--muted);text-transform:lowercase}
 .refs__list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:5px}
 .refs__list li{display:flex;align-items:baseline;gap:8px;min-width:0}
 .refs__list a{font:12px/1.5 var(--mono);overflow-wrap:anywhere}
-.refs__kind{flex:none}
+/* One width for every chip, not a floor: `issue` is five letters and
+   `attention` is nine, so shrink-to-fit put every label at a different x.
+   8.4em is the same column the resource list already uses — it clears
+   `attention` at this 10px mono. */
+.refs__kind{flex:0 0 8.4em;text-align:center}
 .state{font:10px/1.6 var(--mono);letter-spacing:.04em}
 .state--public{color:var(--add)}
 .state--private{color:var(--muted)}
