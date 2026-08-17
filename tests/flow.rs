@@ -2942,6 +2942,10 @@ async fn the_home_page_is_the_feed_and_the_project_list_moved_to_its_own_url() {
         home.contains("href=\"/?kind=resource.publish\""),
         "the kind chips must filter in place: {home}"
     );
+    assert!(
+        home.contains("href=\"/?kind=all\""),
+        "all must name itself so paging does not snap back to the default: {home}"
+    );
 
     // The old address keeps working for anything already bookmarked or linked,
     // filters and cursor included.
@@ -3075,6 +3079,77 @@ async fn entering_a_project_opens_its_activity_feed() {
         filtered.contains("href=\"/p/krypton?kind=resource.publish\"")
             && filtered.contains("class=\"on\">resource.publish</a>"),
         "the event-kind chip must stay selected: {filtered}"
+    );
+}
+
+/// The browse feed opens on publishes. Account noise (register, tokens)
+/// stays one chip away so the home page answers "what was published".
+#[tokio::test]
+async fn the_browse_feed_defaults_to_resource_publish() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(&session, json!(["resource:write", "resource:read"]))
+        .await;
+    server
+        .post(
+            "/v1/projects/krypton/resources:inline",
+            Some(&token),
+            json!({
+                "kind": "doc",
+                "slug": "notes",
+                "title": "Release notes",
+                "contents": [],
+            }),
+        )
+        .await;
+
+    let (status, home) = server.get_html("/", Some(&session)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        home.contains("Release notes"),
+        "a publish must land on the default feed: {home}"
+    );
+    assert!(
+        home.contains("class=\"on\">resource.publish</a>"),
+        "the default chip must be selected: {home}"
+    );
+    assert!(
+        !home.contains("minted token") && !home.contains("registered"),
+        "account rows stay off the default feed: {home}"
+    );
+    assert!(
+        !home.contains("created project"),
+        "project.create is not a publish: {home}"
+    );
+
+    let (status, all) = server.get_html("/?kind=all", Some(&session)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        all.contains("class=\"on\">all</a>"),
+        "all must light up when named: {all}"
+    );
+    assert!(
+        all.contains("minted token") && all.contains("Release notes"),
+        "all is the unfiltered log: {all}"
+    );
+
+    let (status, project) = server.get_html("/p/krypton", Some(&session)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        project.contains("Release notes") && project.contains("class=\"on\">resource.publish</a>"),
+        "a project feed uses the same default: {project}"
+    );
+    assert!(
+        !project.contains("created project"),
+        "project.create stays behind all: {project}"
+    );
+
+    let (status, project_all) = server.get_html("/p/krypton?kind=all", Some(&session)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        project_all.contains("created project") && project_all.contains("Release notes"),
+        "all on a project is every project-audience row: {project_all}"
     );
 }
 

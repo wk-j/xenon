@@ -6,7 +6,7 @@
 {#- The same chip row the project page uses, so a filter looks and works the
     same wherever it appears. "all" clears both filters at once. -#}
 <div class="kinds kinds--events">
-  <a href="/{% if let Some(p) = project_filter %}?project={{ p }}{% endif %}"
+  <a href="/?kind=all{% if let Some(p) = project_filter %}&amp;project={{ p }}{% endif %}"
      class="{% if kind_filter.is_none() %}on{% endif %}">all</a>
   {%- for k in kinds %}
   <a href="/?kind={{ k }}{% if let Some(p) = project_filter %}&amp;project={{ p }}{% endif %}"

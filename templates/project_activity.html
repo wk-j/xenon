@@ -17,7 +17,7 @@
 {#- Event kinds that can appear in this project, not the fleet-wide set:
     account rows never carry a project, so those chips would always be empty. -#}
 <div class="kinds kinds--events">
-  <a href="{{ feed_path }}" class="{% if kind_filter.is_none() %}on{% endif %}">all</a>
+  <a href="{{ feed_path }}?kind=all" class="{% if kind_filter.is_none() %}on{% endif %}">all</a>
   {%- for k in kinds %}
   <a href="{{ feed_path }}?kind={{ k }}"
      class="{% if kind_filter.as_deref() == Some(k) %}on{% endif %}">{{ k }}</a>

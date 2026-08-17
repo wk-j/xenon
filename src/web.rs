@@ -24,6 +24,10 @@ use crate::state::AppState;
 /// Rows per feed page. Enough to fill a screen, short enough that the "older"
 /// link is reachable without a long scroll.
 const FEED_PAGE: i64 = 40;
+/// Browse-only: `?kind=all` is the unfiltered feed. A missing `kind` now
+/// means the default chip (`resource.publish`), so the unfiltered view
+/// has to name itself or paging would snap back to the default.
+const FEED_KIND_ALL: &str = "all";
 
 // ─── templates ──────────────────────────────────────────────────────────────
 //
@@ -1032,11 +1036,7 @@ async fn activity_page(
     if !has_browser_session(&actor) {
         return Ok(redirect_to_login());
     }
-    let kind_filter = query
-        .kind
-        .as_deref()
-        .filter(|k| event::KINDS.contains(k))
-        .map(str::to_string);
+    let kind_filter = browse_kind_filter(query.kind.as_deref(), &event::KINDS);
     let project_filter = query.project.clone().filter(|p| !p.is_empty());
 
     let conn = state.db();
@@ -1054,7 +1054,12 @@ async fn activity_page(
 
     let (days, older) = group_feed(&events);
     // Filters have to survive paging, so the "older" link rebuilds them.
-    let query_base = feed_query_base(project_filter.as_deref(), kind_filter.as_deref());
+    // The kind is always named: a missing one would be read as the default
+    // chip, which is wrong for `?kind=all`.
+    let query_base = feed_query_base(
+        project_filter.as_deref(),
+        Some(kind_filter.as_deref().unwrap_or(FEED_KIND_ALL)),
+    );
 
     let (title, css_url, app_js_url) = chrome("activity");
     Ok(render(&ActivityTemplate {
@@ -1112,6 +1117,21 @@ fn feed_query_base(project: Option<&str>, kind: Option<&str>) -> String {
         query_base.push_str(&format!("kind={}&", urlencode(k)));
     }
     query_base
+}
+
+/// Which event kind the browse feed is narrowed to.
+///
+/// A missing `?kind=` is `resource.publish`, not "everything": the home
+/// page answers what was published. `?kind=all` is the unfiltered log —
+/// it has to be named because a missing param now means the default chip.
+/// An unknown value falls back to the default rather than silently
+/// becoming the full log.
+fn browse_kind_filter(raw: Option<&str>, allowed: &[&str]) -> Option<String> {
+    match raw {
+        Some(FEED_KIND_ALL) => None,
+        Some(k) if allowed.contains(&k) => Some(k.to_string()),
+        _ => Some(event::RESOURCE_PUBLISH.to_string()),
+    }
 }
 
 /// Breadcrumb trail under a project. The project itself is the last crumb on
@@ -1235,11 +1255,7 @@ async fn project_page(
         }
     }
 
-    let kind_filter = query
-        .kind
-        .as_deref()
-        .filter(|k| event::PROJECT_KINDS.contains(k))
-        .map(str::to_string);
+    let kind_filter = browse_kind_filter(query.kind.as_deref(), &event::PROJECT_KINDS);
 
     let conn = state.db();
     let project_id = readable_project(&conn, actor.as_ref(), &project)?;
@@ -1257,7 +1273,7 @@ async fn project_page(
     drop(conn);
 
     let (days, older) = group_feed(&events);
-    let query_base = feed_query_base(None, kind_filter.as_deref());
+    let query_base = feed_query_base(None, Some(kind_filter.as_deref().unwrap_or(FEED_KIND_ALL)));
     let feed_path = format!("/p/{}", urlencode(&project));
     let (title, css_url, app_js_url) = chrome(&project);
     Ok(render(&ProjectActivityTemplate {
@@ -2796,6 +2812,29 @@ mod tests {
         assert_eq!(leaf[1].href.as_deref(), Some("/p/krypton"));
         assert!(leaf[2].href.is_none());
         assert_eq!(leaf[2].label, "resources");
+    }
+
+    #[test]
+    fn the_browse_feed_defaults_to_publish_and_all_is_explicit() {
+        assert_eq!(
+            browse_kind_filter(None, &event::KINDS).as_deref(),
+            Some(event::RESOURCE_PUBLISH)
+        );
+        assert_eq!(browse_kind_filter(Some("all"), &event::KINDS), None);
+        assert_eq!(
+            browse_kind_filter(Some("token.create"), &event::KINDS).as_deref(),
+            Some("token.create")
+        );
+        assert_eq!(
+            browse_kind_filter(Some("nonsense"), &event::KINDS).as_deref(),
+            Some(event::RESOURCE_PUBLISH),
+            "unknown kind falls back to the default, not the full log"
+        );
+        assert_eq!(
+            browse_kind_filter(Some("token.create"), &event::PROJECT_KINDS).as_deref(),
+            Some(event::RESOURCE_PUBLISH),
+            "a kind that cannot appear on a project feed falls back to the default"
+        );
     }
 
     #[test]

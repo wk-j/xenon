@@ -208,6 +208,8 @@ Server-rendered, no JavaScript, matching the rest of the browse UI:
   Resource rows carry the kind chip in its hue (`k--<kind>`); account rows carry a muted `account`
   chip, so the security log is visually distinct without a second page.
 - **Filters** — `?project=` and `?kind=` render as the existing `.kinds` chip row.
+  A missing `kind` is `resource.publish`. `?kind=all` is every kind the viewer
+  may see. `/v1/activity` is unchanged: no `kind` still means everything.
 - **Paging** — an `older →` link carrying `?before=`, so paging works without JS.
 - **Empty state** — "nothing here yet — publish something from krypton with `#push`".
 - Nav gains `activity` beside `projects`. An anonymous visitor is sent to `/login`; once the feed

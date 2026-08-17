@@ -266,9 +266,11 @@ project's activity · `/p/<project>/resources` its resources, filterable by kind
 `/r/<project>/<kind>/<slug>/@<seq>` a pinned revision · `/register` · `/login` ·
 `POST /logout` · `/settings/tokens` · `/admin` (admin session).
 
-The feed is the home page: opening the server answers *what has happened* before
-*what exists*. `/activity` was its address until then and answers `303` to `/`,
-query string intact, so a bookmarked filter still lands on the rows it named.
+The feed is the home page: opening the server answers *what was published* before
+*what exists*. A missing `?kind=` is `resource.publish`; `?kind=all` is every
+kind the viewer may see. `/activity` was its address until then and answers
+`303` to `/`, query string intact, so a bookmarked filter still lands on the
+rows it named.
 
 A project has three pages — its activity, its resources, and its usage — and
 each links to the others. Opening the project is the activity page, for the
