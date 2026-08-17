@@ -479,6 +479,17 @@ pre.rv-diff span{display:block}
 .rv-svg{margin:1em 0;text-align:center}
 .rv-svg svg{max-width:100%;height:auto}
 .rv-unknown{font:11px var(--mono);color:var(--muted);margin:1em 0 -.6em}
+.rv-src{margin:8px 0 0;font:12px/1.6 var(--mono)}
+.rv-src__head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;
+font-size:11px;color:var(--muted);margin:0 0 3px;word-break:break-all}
+.rv-src__chip{color:var(--warn)}
+.rv-src__body{background:var(--code-bg);border-radius:6px;padding:6px 0;overflow-x:auto}
+.rv-src__line{display:flex;gap:12px;padding:0 10px;white-space:pre-wrap;overflow-wrap:anywhere}
+.rv-src__ln{flex:0 0 auto;min-width:5ch;text-align:right;color:var(--muted);user-select:none}
+.rv-src__line>span:last-child{flex:1 1 auto;min-width:0}
+.rv-src__line--anchor{background:color-mix(in oklab,var(--accent) 14%,transparent)}
+.rv-src__line--anchor .rv-src__ln{color:var(--warn)}
+.rv-src__more{font-size:11px;color:var(--muted);margin:3px 0 0}
 
 /* Attention flag — a judgement item, whose entire payload is the revision's
    `meta` (no files exist for this kind). Field headings carry the structure;

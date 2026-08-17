@@ -15,13 +15,11 @@ Xenon's browse UI is HTML assembled with `format!` inside `src/web.rs` — one `
 handful of inline `<script>` blocks, no asset directory, no build step. That was right for six
 read-only pages, and it is already the ceiling.
 
-The gap is visible today, not hypothetical. `render_file` (`src/web.rs:400`) has exactly four
-cases: HTML → sandboxed iframe, image → `<img>`, markdown → comrak, else → download link. So a
-Review Board pushed from Krypton — a document whose meaning lives in typed fences
-(`review:walkthrough`, `review:finding`, `review:decision`, `review:chart`, `review:svg`) — lands
-on Xenon as **raw fence source in a grey code block**. The same is true of issue analyses. A
-teammate opening a Board on Xenon sees strictly less than the person who has Krypton running,
-which inverts the entire point of publishing.
+The gap is visible today, not hypothetical. `render_file` (`src/web.rs`) now runs markdown through comrak plus the typed-block
+post-pass, so walkthrough / finding / decision / chart / svg / diff fences become semantic HTML.
+Source excerpts under those anchors (spec 217 on the loopback) arrive as a publish-time
+`excerpts.json` sidecar (Krypton spec 230) — Xenon never reads a checkout. Boards pushed
+before that sidecar still show path + say with no code until they are re-pushed.
 
 Anything richer — searching resources, filtering a project by kind, stepping a walkthrough,
 diffing two revisions — has nowhere to live in the current structure.

@@ -1560,6 +1560,7 @@ async fn resource_page(
     let files = revision
         .files
         .iter()
+        .filter(|f| f.path != "excerpts.json")
         .map(|f| FileTab {
             path: f.path.clone(),
             href: urlencode(&f.path),
@@ -1710,7 +1711,17 @@ fn render_file(
         // that comrak renders as anonymous grey code blocks. The post-pass turns
         // the ones we know into semantic markup and leaves the rest alone, so a
         // Board read here shows what it shows inside Krypton.
-        let mut html = crate::render::render_review_blocks(&markdown_to_html(&text));
+        let excerpts = if path.ends_with("review.md") {
+            file_blob(state, revision_id, "excerpts.json")
+                .ok()
+                .flatten()
+                .and_then(|(sha, _)| state.blobs.read(&sha).ok())
+                .and_then(|bytes| crate::render::ExcerptIndex::parse(&bytes))
+        } else {
+            None
+        };
+        let mut html =
+            crate::render::render_review_blocks_with(&markdown_to_html(&text), excerpts.as_ref());
         // After the review pass, so an issue mentioned inside a finding's own
         // prose gets its link too.
         if let Some(repo) = github_repo {

@@ -14,7 +14,51 @@
 // is session-stealing XSS here. Every renderer below re-escapes what it emits;
 // `render_rv_svg` is the single deliberate exception and is documented as such.
 
+use std::collections::BTreeMap;
+
+use serde::Deserialize;
+
 use crate::web::escape;
+
+/// Publish-time source snapshot from Krypton (`excerpts.json`, spec 230).
+#[derive(Debug, Deserialize)]
+pub struct ExcerptSidecar {
+    pub version: u32,
+    #[serde(default)]
+    pub anchors: BTreeMap<String, ExcerptRecord>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ExcerptRecord {
+    pub skip: Option<String>,
+    pub file_lines: Option<usize>,
+    pub label: Option<String>,
+    pub first_line: Option<usize>,
+    pub anchor_line: Option<usize>,
+    pub lines: Option<Vec<String>>,
+    pub omitted: Option<usize>,
+    pub stale: Option<bool>,
+}
+
+pub struct ExcerptIndex {
+    anchors: BTreeMap<String, ExcerptRecord>,
+}
+
+impl ExcerptIndex {
+    pub fn parse(bytes: &[u8]) -> Option<Self> {
+        let sidecar: ExcerptSidecar = serde_json::from_slice(bytes).ok()?;
+        if sidecar.version != 1 {
+            return None;
+        }
+        Some(Self {
+            anchors: sidecar.anchors,
+        })
+    }
+
+    fn get(&self, key: &str) -> Option<&ExcerptRecord> {
+        self.anchors.get(key.trim())
+    }
+}
 
 /// Inverse of [`escape`] for the five entities it emits. comrak hands us a code
 /// block body already HTML-escaped, so it is un-escaped once here and re-escaped
@@ -34,6 +78,10 @@ pub(crate) fn unescape(s: &str) -> String {
 /// pinned by `comrak_fence_shape_is_what_this_pass_expects` below, so an upgrade
 /// that changes it fails loudly instead of silently reverting every Board.
 pub fn render_review_blocks(html: &str) -> String {
+    render_review_blocks_with(html, None)
+}
+
+pub fn render_review_blocks_with(html: &str, excerpts: Option<&ExcerptIndex>) -> String {
     let mut out = String::with_capacity(html.len());
     let mut rest = html;
     // comrak always emits the info string as a `language-` class on <code>.
@@ -58,7 +106,7 @@ pub fn render_review_blocks(html: &str) -> String {
         };
         let body = unescape(&after_open[body_start..body_end]);
         let kind = lang.split_whitespace().next().unwrap_or("");
-        match render_review_block(kind, &body) {
+        match render_review_block(kind, &body, excerpts) {
             Some(rendered) => out.push_str(&rendered),
             // Unknown fence: keep comrak's plain code block verbatim.
             None => out.push_str(&from_open[..OPEN.len() + body_end + CLOSE.len()]),
@@ -70,10 +118,10 @@ pub fn render_review_blocks(html: &str) -> String {
 }
 
 /// Dispatch one fence body to its renderer. `None` ⇒ not a review block.
-fn render_review_block(kind: &str, body: &str) -> Option<String> {
+fn render_review_block(kind: &str, body: &str, excerpts: Option<&ExcerptIndex>) -> Option<String> {
     match kind {
-        "review:walkthrough" => Some(render_rv_walkthrough(body)),
-        "review:finding" => Some(render_rv_finding(body)),
+        "review:walkthrough" => Some(render_rv_walkthrough(body, excerpts)),
+        "review:finding" => Some(render_rv_finding(body, excerpts)),
         "review:decision" => Some(render_rv_decision(body)),
         "review:metrics" => Some(render_rv_metrics(body)),
         "review:chart" => Some(render_rv_chart(body)),
@@ -157,49 +205,61 @@ fn rv_unquote(value: &str) -> String {
     v.to_string()
 }
 
-/// Walkthrough → an ordered list with a monospace anchor per step. Anchors are
-/// PLAIN TEXT: no jump target exists on a server that does not hold the repo.
-fn render_rv_walkthrough(body: &str) -> String {
+/// Walkthrough → an ordered list with a monospace anchor per step. When the
+/// published revision carries `excerpts.json` (spec 230), the snapshot of
+/// that `at:` is rendered underneath. Without a sidecar, anchors stay text.
+fn render_rv_walkthrough(body: &str, excerpts: Option<&ExcerptIndex>) -> String {
     let mut out = String::new();
     if let Some(title) = rv_scalar(body, "title") {
         out.push_str("<div class=\"rv-steps__title\">");
         out.push_str(&escape(&rv_unquote(&title)));
         out.push_str("</div>");
     }
-    out.push_str("<ol class=\"rv-steps\">");
-    let mut open = false;
+    struct Step {
+        at: Option<String>,
+        says: Vec<String>,
+    }
+    let mut steps: Vec<Step> = Vec::new();
     for line in rv_group(body, "steps") {
         if let Some(at) = line
             .strip_prefix("- at:")
             .or_else(|| line.strip_prefix("-at:"))
         {
-            if open {
-                out.push_str("</li>");
-            }
-            out.push_str("<li><span class=\"rv-step__at\">");
-            out.push_str(&escape(&rv_unquote(at)));
-            out.push_str("</span>");
-            open = true;
+            steps.push(Step {
+                at: Some(rv_unquote(at)),
+                says: Vec::new(),
+            });
         } else if let Some(say) = line.strip_prefix("say:") {
-            if !open {
-                out.push_str("<li>");
-                open = true;
+            match steps.last_mut() {
+                Some(step) => step.says.push(rv_unquote(say)),
+                None => steps.push(Step {
+                    at: None,
+                    says: vec![rv_unquote(say)],
+                }),
             }
-            out.push_str("<span class=\"rv-step__say\">");
-            out.push_str(&escape(&rv_unquote(say)));
-            out.push_str("</span>");
         } else if let Some(bare) = line.strip_prefix("- ") {
-            // A bare scalar step (no `at:`/`say:` split) still renders.
-            if open {
-                out.push_str("</li>");
-            }
-            out.push_str("<li><span class=\"rv-step__say\">");
-            out.push_str(&escape(&rv_unquote(bare)));
-            out.push_str("</span>");
-            open = true;
+            steps.push(Step {
+                at: None,
+                says: vec![rv_unquote(bare)],
+            });
         }
     }
-    if open {
+    out.push_str("<ol class=\"rv-steps\">");
+    for step in &steps {
+        out.push_str("<li>");
+        if let Some(at) = &step.at {
+            out.push_str("<span class=\"rv-step__at\">");
+            out.push_str(&escape(at));
+            out.push_str("</span>");
+        }
+        for say in &step.says {
+            out.push_str("<span class=\"rv-step__say\">");
+            out.push_str(&escape(say));
+            out.push_str("</span>");
+        }
+        if let Some(at) = &step.at {
+            out.push_str(&render_rv_source(at, excerpts));
+        }
         out.push_str("</li>");
     }
     out.push_str("</ol>");
@@ -209,7 +269,7 @@ fn render_rv_walkthrough(body: &str) -> String {
 /// Finding → a bordered card with the severity carried by a text chip AND the
 /// heading colour. Never a left accent rail, and never colour alone: the chip is
 /// what a colour-blind reader (or a printed page) has to go on.
-fn render_rv_finding(body: &str) -> String {
+fn render_rv_finding(body: &str, excerpts: Option<&ExcerptIndex>) -> String {
     let severity = rv_scalar(body, "severity")
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_else(|| "non-blocking".to_string());
@@ -228,12 +288,82 @@ fn render_rv_finding(body: &str) -> String {
         "<div class=\"rv-finding rv-finding--{tone}\"><div class=\"rv-finding__head\"><span class=\"rv-finding__sev\">{chip}</span><span class=\"rv-finding__title\">{}</span>",
         escape(&rv_unquote(&title))
     );
+    let mut source = String::new();
     if let Some(anchor) = anchor {
+        let anchor = rv_unquote(&anchor);
         out.push_str("<span class=\"rv-finding__at\">");
-        out.push_str(&escape(&rv_unquote(&anchor)));
+        out.push_str(&escape(&anchor));
         out.push_str("</span>");
+        source = render_rv_source(&anchor, excerpts);
     }
-    out.push_str("</div></div>");
+    out.push_str("</div>");
+    out.push_str(&source);
+    out.push_str("</div>");
+    out
+}
+
+fn render_rv_source(key: &str, excerpts: Option<&ExcerptIndex>) -> String {
+    let Some(index) = excerpts else {
+        return String::new();
+    };
+    let Some(record) = index.get(key) else {
+        return String::new();
+    };
+    match record.skip.as_deref() {
+        Some("missing") => rv_src_notice(key, "ไฟล์นี้ไม่มีแล้ว"),
+        Some("drifted") => {
+            let n = record.file_lines.unwrap_or(0);
+            rv_src_notice(key, &format!("บรรทัดนี้เลยท้ายไฟล์ — ตอนนี้ไฟล์มี {n} บรรทัด"))
+        }
+        Some(_) => String::new(),
+        None => render_rv_excerpt(record),
+    }
+}
+
+fn rv_src_notice(label: &str, reason: &str) -> String {
+    format!(
+        "<div class=\"rv-src rv-src--drifted\"><div class=\"rv-src__head\"><span>{}</span><span class=\"rv-src__chip\">{}</span></div></div>",
+        escape(label),
+        escape(reason)
+    )
+}
+
+fn render_rv_excerpt(record: &ExcerptRecord) -> String {
+    let Some(lines) = record.lines.as_ref() else {
+        return String::new();
+    };
+    let first = record.first_line.unwrap_or(1);
+    let stale = record.stale.unwrap_or(false);
+    let mut out = String::from("<div class=\"rv-src");
+    if stale {
+        out.push_str(" rv-src--stale");
+    }
+    out.push_str("\"><div class=\"rv-src__head\"><span>");
+    out.push_str(&escape(record.label.as_deref().unwrap_or("")));
+    out.push_str("</span>");
+    if stale {
+        out.push_str("<span class=\"rv-src__chip\">ไฟล์เปลี่ยนหลังรีวิวนี้</span>");
+    }
+    out.push_str("</div><div class=\"rv-src__body\">");
+    for (i, line) in lines.iter().enumerate() {
+        let number = first + i;
+        out.push_str(if record.anchor_line == Some(number) {
+            "<div class=\"rv-src__line rv-src__line--anchor\"><span class=\"rv-src__ln\">"
+        } else {
+            "<div class=\"rv-src__line\"><span class=\"rv-src__ln\">"
+        });
+        out.push_str(&number.to_string());
+        out.push_str("</span><span>");
+        out.push_str(&escape(line));
+        out.push_str("</span></div>");
+    }
+    out.push_str("</div>");
+    if record.omitted.unwrap_or(0) > 0 {
+        out.push_str("<div class=\"rv-src__more\">อีก ");
+        out.push_str(&record.omitted.unwrap_or(0).to_string());
+        out.push_str(" บรรทัด</div>");
+    }
+    out.push_str("</div>");
     out
 }
 
@@ -565,10 +695,14 @@ mod tests {
         // One hostile string, every renderer that interpolates agent input.
         const XSS: &str = "<img src=x onerror=alert(1)>";
         let rendered = [
-            render_rv_finding(&format!("severity: blocking\ntitle: {XSS}\nfile: {XSS}")),
-            render_rv_walkthrough(&format!(
-                "title: {XSS}\nsteps:\n  - at: {XSS}\n    say: {XSS}"
-            )),
+            render_rv_finding(
+                &format!("severity: blocking\ntitle: {XSS}\nfile: {XSS}"),
+                None,
+            ),
+            render_rv_walkthrough(
+                &format!("title: {XSS}\nsteps:\n  - at: {XSS}\n    say: {XSS}"),
+                None,
+            ),
             render_rv_decision(&format!("question: {XSS}\noptions:\n  - {XSS}")),
             render_rv_metrics(&format!("{XSS}: {XSS}")),
             render_rv_chart(&format!("title: {XSS}\ndata:\n  {XSS}: 1")),
@@ -628,7 +762,7 @@ mod tests {
 
     #[test]
     fn an_unknown_severity_degrades_to_warn_rather_than_vanishing() {
-        let html = render_rv_finding("severity: ร้ายแรง\ntitle: t");
+        let html = render_rv_finding("severity: ร้ายแรง\ntitle: t", None);
         assert!(html.contains("rv-finding--warn"));
         assert!(html.contains("WARN"));
         assert!(html.contains("t"));
@@ -638,6 +772,7 @@ mod tests {
     fn walkthrough_steps_render_in_order_with_anchors() {
         let html = render_rv_walkthrough(
             "title: tour\nsteps:\n  - at: src/a.rs:1\n    say: first\n  - at: src/b.rs:2\n    say: second\n",
+            None,
         );
         assert_eq!(html.matches("<li>").count(), 2);
         let first = html.find("src/a.rs:1").unwrap();
@@ -653,6 +788,7 @@ mod tests {
         // plus an empty <ol class="rv-steps">.
         let html = render_rv_walkthrough(
             "title: tour\nsteps:\n- at: src/a.rs:1\n  say: first\n- at: src/b.rs:2\n  say: second\n",
+            None,
         );
         assert_eq!(html.matches("<li>").count(), 2, "{html}");
         assert!(
@@ -664,6 +800,40 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("rv-steps__title"));
+    }
+
+    #[test]
+    fn sidecar_excerpts_render_under_walkthrough_and_finding() {
+        let json = r#"{
+            "version": 1,
+            "anchors": {
+                "src/a.rs:1": {
+                    "label": "src/a.rs:1-3",
+                    "first_line": 1,
+                    "anchor_line": 1,
+                    "lines": ["fn a() {}", "fn b() {}", "fn c() {}"],
+                    "omitted": 0,
+                    "stale": false
+                },
+                "src/gone.rs:9": { "skip": "missing" }
+            }
+        }"#;
+        let index = ExcerptIndex::parse(json.as_bytes()).unwrap();
+        let html = render_review_blocks_with(
+            &markdown_to_html(
+                "```review:walkthrough\nsteps:\n  - at: src/a.rs:1\n    say: here\n```\n\n```review:finding\nfile: src/gone.rs\nline: 9\ntitle: gone\n```\n",
+            ),
+            Some(&index),
+        );
+        assert!(html.contains("rv-src__line--anchor"), "{html}");
+        assert!(html.contains("fn a() {}"), "{html}");
+        assert!(html.contains("ไฟล์นี้ไม่มีแล้ว"), "{html}");
+        assert!(!html.contains("border-left"));
+    }
+
+    #[test]
+    fn sidecar_unknown_version_is_ignored() {
+        assert!(ExcerptIndex::parse(br#"{"version": 2, "anchors": {}}"#).is_none());
     }
 
     #[test]
