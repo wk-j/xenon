@@ -96,7 +96,7 @@ docker run -d --name xenon -p 8787:8787 \
 ```
 
 Put a reverse proxy in front of `:8787` before exposing this. Images are also
-tagged `0.1.15` / `0.1` — pin an exact version instead of `latest` when
+tagged `0.1.16` / `0.1` — pin an exact version instead of `latest` when
 repeatable deployments matter. To build locally: `docker build -t xenon .`
 
 ### Backups
