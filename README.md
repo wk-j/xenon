@@ -2,7 +2,7 @@
 
 Central resource server for [Krypton](https://github.com/wk-j/krypton) work
 product — HTML artifacts, review bundles, issue analyses, docs, attention flags,
-and daily notes.
+daily notes, and confirmed project timeline events.
 
 Krypton keeps that work in a gitignored `.krypton/` tree, reachable only on
 loopback while the app is running. Xenon makes it durable and readable when
@@ -108,14 +108,16 @@ keep issued certificates across reinstalls.
 ## Concepts
 
 A **resource** is `{ project, kind, slug, title, meta, files[] }`. Kinds:
-`artifact`, `review`, `analysis`, `doc`, `attention`, `daily`. Bundles and single
+`artifact`, `review`, `analysis`, `doc`, `attention`, `daily`, `timeline`. Bundles and single
 files differ only in file count; `attention` has no files and carries everything
-in `meta`, and `daily` is one developer day — `note.md` derived from records plus
+in `meta`, `daily` is one developer day — `note.md` derived from records plus
 an optional `brief.md` a lane narrated from it.
 
 Blobs are **immutable** (sha256). Resources change by **revision**: each push
 appends a sealed revision, the latest is head, and an interrupted push never
-exposes a half-uploaded resource. Permalink: `/r/<project>/<kind>/<slug>/@<seq>`.
+exposes a half-uploaded resource. A `timeline` resource is one confirmed event,
+with `event.md` as its source and occurrence/attribution fields in `meta` for the
+project chronology. Permalink: `/r/<project>/<kind>/<slug>/@<seq>`.
 
 ## Security
 

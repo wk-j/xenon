@@ -399,6 +399,74 @@ struct ResourceCard {
 }
 
 #[derive(askama::Template)]
+#[template(path = "timeline.html")]
+struct TimelineTemplate {
+    title: String,
+    css_url: String,
+    app_js_url: String,
+    crumbs: Vec<Crumb>,
+    nav: Nav,
+    project: String,
+    initial: String,
+    hue: u16,
+    github_repo: Option<String>,
+    tab: &'static str,
+    topics: Vec<TimelineTopic>,
+    all_topics_href: String,
+    events: Vec<TimelineRow>,
+    topic_filter: String,
+    search: String,
+    order: &'static str,
+    diagnostic_count: usize,
+}
+
+struct TimelineTopic {
+    title: String,
+    count: usize,
+    href: String,
+    selected: bool,
+}
+
+struct TimelineRow {
+    event_id: String,
+    summary: String,
+    topic_title: String,
+    occurred: String,
+    occurred_exact: String,
+    made_by: String,
+    source_present: bool,
+    superseded: bool,
+    href: String,
+    relation: Option<String>,
+    related_event: Option<String>,
+    related_href: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TimelineMeta {
+    schema: u8,
+    event_id: String,
+    topic_id: String,
+    topic_title: String,
+    summary: String,
+    occurred_at: String,
+    occurred_at_ms: i64,
+    made_by: String,
+    recorded_at: String,
+    recorded_at_ms: i64,
+    recorded_by: String,
+    recorder_lane: String,
+    source_ref: Option<String>,
+    relation: Option<String>,
+    related_event: Option<String>,
+}
+
+struct TimelineEventView {
+    meta: TimelineMeta,
+}
+
+#[derive(askama::Template)]
 #[template(path = "resource.html")]
 struct ResourceTemplate {
     title: String,
@@ -876,6 +944,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/admin", get(admin_page))
         .route("/p/{project}", get(project_page))
         .route("/p/{project}/resources", get(project_resources_page))
+        .route("/p/{project}/timeline", get(project_timeline_page))
         .route("/p/{project}/usage", get(usage_page))
         .route("/r/{project}/{kind}/{*slug}", get(resource_page))
 }
@@ -1389,16 +1458,266 @@ async fn project_resources_page(
     .into_response())
 }
 
+#[derive(Deserialize)]
+pub struct TimelineQuery {
+    topic: Option<String>,
+    q: Option<String>,
+    order: Option<String>,
+}
+
+async fn project_timeline_page(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Path(project): Path<String>,
+    Query(query): Query<TimelineQuery>,
+) -> AppResult<Response> {
+    let (actor, nav) = viewer(&state, &headers, &uri);
+    if !has_browser_session(&actor) {
+        return Ok(redirect_to_login());
+    }
+    let conn = state.db();
+    let project_id = readable_project(&conn, actor.as_ref(), &project)?;
+    let github_repo = project_github_repo(&conn, &project_id)?;
+    let mut stmt = conn.prepare(
+        "SELECT r.slug, v.meta,
+                EXISTS(SELECT 1 FROM rev_file f
+                       WHERE f.revision_id = v.id AND f.path = 'event.md')
+         FROM resource r JOIN revision v ON v.id = r.head_revision
+         WHERE r.project_id = ?1 AND r.kind = 'timeline'
+           AND v.sealed_at IS NOT NULL
+         ORDER BY r.slug LIMIT 5000",
+    )?;
+    let records = stmt
+        .query_map([project_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, bool>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+    drop(conn);
+
+    let mut diagnostic_count = 0;
+    let mut all = Vec::new();
+    for (slug, raw_meta, has_event_file) in records {
+        let Ok(meta) = serde_json::from_str::<TimelineMeta>(&raw_meta) else {
+            diagnostic_count += 1;
+            continue;
+        };
+        if !has_event_file || !valid_timeline_meta(&meta, &slug) {
+            diagnostic_count += 1;
+            continue;
+        }
+        all.push(TimelineEventView { meta });
+    }
+
+    let event_ids: std::collections::HashSet<&str> = all
+        .iter()
+        .map(|event| event.meta.event_id.as_str())
+        .collect();
+    let superseded: std::collections::HashSet<&str> = all
+        .iter()
+        .filter(|event| event.meta.relation.as_deref() == Some("supersedes"))
+        .filter_map(|event| event.meta.related_event.as_deref())
+        .collect();
+
+    let mut topic_data = std::collections::HashMap::<String, (String, i64, usize)>::new();
+    for event in &all {
+        let entry = topic_data
+            .entry(event.meta.topic_id.clone())
+            .or_insert_with(|| (event.meta.topic_title.clone(), event.meta.occurred_at_ms, 0));
+        entry.2 += 1;
+        if event.meta.occurred_at_ms >= entry.1 {
+            entry.0 = event.meta.topic_title.clone();
+            entry.1 = event.meta.occurred_at_ms;
+        }
+    }
+
+    let topic_filter = query.topic.unwrap_or_default().trim().to_string();
+    let search = query.q.unwrap_or_default().trim().to_string();
+    let search_folded = search.to_lowercase();
+    let order = if query.order.as_deref() == Some("desc") {
+        "desc"
+    } else {
+        "asc"
+    };
+    let mut topics: Vec<TimelineTopic> = topic_data
+        .into_iter()
+        .map(|(id, (title, _, count))| TimelineTopic {
+            selected: topic_filter == id || topic_filter == title,
+            href: timeline_url(&project, Some(&id), &search, order),
+            title,
+            count,
+        })
+        .collect();
+    topics.sort_by_key(|topic| topic.title.to_lowercase());
+
+    let mut filtered: Vec<&TimelineEventView> = all
+        .iter()
+        .filter(|event| {
+            topic_filter.is_empty()
+                || event.meta.topic_id == topic_filter
+                || event.meta.topic_title == topic_filter
+        })
+        .filter(|event| {
+            search_folded.is_empty()
+                || event.meta.summary.to_lowercase().contains(&search_folded)
+                || event
+                    .meta
+                    .topic_title
+                    .to_lowercase()
+                    .contains(&search_folded)
+                || event.meta.made_by.to_lowercase().contains(&search_folded)
+        })
+        .collect();
+    filtered.sort_by(|left, right| {
+        left.meta
+            .occurred_at_ms
+            .cmp(&right.meta.occurred_at_ms)
+            .then(left.meta.recorded_at_ms.cmp(&right.meta.recorded_at_ms))
+            .then(left.meta.event_id.cmp(&right.meta.event_id))
+    });
+    if order == "desc" {
+        filtered.reverse();
+    }
+
+    let events = filtered
+        .into_iter()
+        .map(|event| {
+            let related_event = event.meta.related_event.clone();
+            let related_href = related_event.as_deref().and_then(|id| {
+                event_ids
+                    .contains(id)
+                    .then(|| format!("/r/{}/timeline/{}", urlencode(&project), urlencode(id)))
+            });
+            TimelineRow {
+                event_id: event.meta.event_id.clone(),
+                summary: event.meta.summary.clone(),
+                topic_title: event.meta.topic_title.clone(),
+                occurred: crate::util::format_ymd_hms(event.meta.occurred_at_ms / 1000),
+                occurred_exact: event.meta.occurred_at.clone(),
+                made_by: event.meta.made_by.clone(),
+                source_present: event
+                    .meta
+                    .source_ref
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty()),
+                superseded: superseded.contains(event.meta.event_id.as_str()),
+                href: format!(
+                    "/r/{}/timeline/{}",
+                    urlencode(&project),
+                    urlencode(&event.meta.event_id)
+                ),
+                relation: event.meta.relation.clone(),
+                related_event,
+                related_href,
+            }
+        })
+        .collect();
+
+    let (title, css_url, app_js_url) = chrome(&format!("{project} timeline"));
+    let all_topics_href = timeline_url(&project, None, &search, order);
+    Ok(render(&TimelineTemplate {
+        title,
+        css_url,
+        app_js_url,
+        crumbs: project_crumbs(&project, Some("timeline")),
+        nav,
+        initial: logo_initial(&project),
+        hue: logo_hue(&project),
+        github_repo,
+        project,
+        tab: "timeline",
+        topics,
+        all_topics_href,
+        events,
+        topic_filter,
+        search,
+        order,
+        diagnostic_count,
+    })?
+    .into_response())
+}
+
+fn valid_timeline_meta(meta: &TimelineMeta, slug: &str) -> bool {
+    meta.schema == 1
+        && meta.event_id == slug
+        && valid_timeline_event_id(&meta.event_id)
+        && meta.topic_id.starts_with("topic-")
+        && meta.topic_id.len() <= 80
+        && meta
+            .topic_id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && bounded_single_line(&meta.topic_title, 120)
+        && bounded_single_line(&meta.summary, 500)
+        && bounded_single_line(&meta.occurred_at, 64)
+        && bounded_single_line(&meta.made_by, 120)
+        && bounded_single_line(&meta.recorded_at, 64)
+        && bounded_single_line(&meta.recorded_by, 120)
+        && bounded_single_line(&meta.recorder_lane, 120)
+        && meta
+            .source_ref
+            .as_deref()
+            .is_none_or(|value| bounded_single_line(value, 2 * 1024))
+        && meta.relation.as_deref().is_none_or(|relation| {
+            matches!(
+                relation,
+                "supersedes" | "refines" | "implements" | "supports" | "caused_by"
+            )
+        })
+        && meta.relation.is_some() == meta.related_event.is_some()
+        && meta
+            .related_event
+            .as_deref()
+            .is_none_or(valid_timeline_event_id)
+}
+
+fn valid_timeline_event_id(value: &str) -> bool {
+    value.starts_with("tl-")
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+fn bounded_single_line(value: &str, max_chars: usize) -> bool {
+    !value.trim().is_empty() && value.chars().count() <= max_chars && !value.contains(['\r', '\n'])
+}
+
+fn timeline_url(project: &str, topic: Option<&str>, search: &str, order: &str) -> String {
+    let mut pairs = Vec::new();
+    if let Some(topic) = topic.filter(|value| !value.is_empty()) {
+        pairs.push(format!("topic={}", urlencode(topic)));
+    }
+    if !search.is_empty() {
+        pairs.push(format!("q={}", urlencode(search)));
+    }
+    if order == "desc" {
+        pairs.push("order=desc".to_string());
+    }
+    let mut url = format!("/p/{}/timeline", urlencode(project));
+    if !pairs.is_empty() {
+        url.push('?');
+        url.push_str(&pairs.join("&"));
+    }
+    url
+}
+
 /// The file a bundle should open on, per kind. First match wins.
 ///
 /// Krypton names these deliberately and they are not the alphabetical first:
 /// `daily` carries `brief.md` (a lane's narration) beside `note.md` (derived
 /// from records), and the record has to be what a reader lands on. `review`
 /// bundles carry an `assets/` directory that sorts ahead of both markdown files.
-const ENTRY_FILES: [(&str, &[&str]); 3] = [
+const ENTRY_FILES: [(&str, &[&str]); 4] = [
     ("daily", &["note.md"]),
     ("review", &["review.md", "response.md"]),
     ("analysis", &["root-cause.md", "fix-plan.md"]),
+    ("timeline", &["event.md"]),
 ];
 
 /// Which file the resource page shows when the reader has not named one.

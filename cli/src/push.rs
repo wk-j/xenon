@@ -8,7 +8,15 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-pub const KINDS: [&str; 5] = ["artifact", "review", "analysis", "doc", "attention"];
+pub const KINDS: [&str; 7] = [
+    "artifact",
+    "review",
+    "analysis",
+    "doc",
+    "attention",
+    "daily",
+    "timeline",
+];
 const MAX_INLINE_BYTES: usize = 1024 * 1024;
 
 pub struct LocalFile {
@@ -436,5 +444,10 @@ mod tests {
     fn xenon_tokens_are_caught_in_a_bundle() {
         let hit = scan_for_secrets("token = xen_abcdefghij_0123456789abcdef");
         assert!(hit.unwrap().contains("Xenon API token"));
+    }
+
+    #[test]
+    fn cli_accepts_every_server_resource_kind() {
+        assert_eq!(KINDS, xenon::api::RESOURCE_KINDS);
     }
 }

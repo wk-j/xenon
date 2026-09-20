@@ -2521,6 +2521,162 @@ async fn deep_pages_carry_a_breadcrumb_trail_back_to_the_root() {
     assert!(resource.contains("crumbs__here"), "{resource}");
 }
 
+#[tokio::test]
+async fn timeline_resources_render_as_a_chronology_and_keep_their_markdown_permalink() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(&session, json!(["resource:write", "resource:read"]))
+        .await;
+
+    async fn push_event(
+        server: &Server,
+        token: &str,
+        id: &str,
+        summary: &str,
+        occurred_at: &str,
+        occurred_at_ms: i64,
+        relation: Option<(&str, &str)>,
+    ) -> Res {
+        let (relation_name, related_event) = relation
+            .map(|(name, event)| (json!(name), json!(event)))
+            .unwrap_or((Value::Null, Value::Null));
+        server
+            .post(
+                "/v1/projects/krypton/resources:inline",
+                Some(token),
+                json!({
+                    "kind": "timeline",
+                    "slug": id,
+                    "title": summary,
+                    "meta": {
+                        "schema": 1,
+                        "eventId": id,
+                        "topicId": "topic-publishing",
+                        "topicTitle": "Timeline publishing",
+                        "summary": summary,
+                        "occurredAt": occurred_at,
+                        "occurredAtMs": occurred_at_ms,
+                        "madeBy": "Current user",
+                        "recordedAt": "2026-09-20T10:30:00+07:00",
+                        "recordedAtMs": 1_789_875_000_000_i64,
+                        "recordedBy": "Codex",
+                        "recorderLane": "Codex-1",
+                        "sourceRef": "docs/259-timeline-xenon-publishing.md",
+                        "relation": relation_name,
+                        "relatedEvent": related_event,
+                        "lane": "Codex-1"
+                    },
+                    "contents": [{
+                        "path": "event.md",
+                        "content_base64": data_encoding::BASE64.encode(
+                            format!("# {summary}\n\nOriginal timeline evidence.\n").as_bytes()
+                        ),
+                        "content_type": "text/markdown"
+                    }]
+                }),
+            )
+            .await
+    }
+
+    let old = push_event(
+        &server,
+        &token,
+        "tl-old",
+        "Approve the publishing contract",
+        "2026-09-20T09:00:00+07:00",
+        1_789_869_600_000,
+        None,
+    )
+    .await;
+    assert_eq!(old.status, StatusCode::CREATED, "{:?}", old.body);
+    let new = push_event(
+        &server,
+        &token,
+        "tl-new",
+        "Implement the publishing contract",
+        "2026-09-20T10:00:00+07:00",
+        1_789_873_200_000,
+        Some(("supersedes", "tl-old")),
+    )
+    .await;
+    assert_eq!(new.status, StatusCode::CREATED, "{:?}", new.body);
+
+    let malformed = server
+        .post(
+            "/v1/projects/krypton/resources:inline",
+            Some(&token),
+            json!({
+                "kind": "timeline",
+                "slug": "tl-broken",
+                "title": "broken",
+                "meta": { "eventId": "tl-broken" },
+                "contents": []
+            }),
+        )
+        .await;
+    assert_eq!(
+        malformed.status,
+        StatusCode::CREATED,
+        "{:?}",
+        malformed.body
+    );
+
+    let (anonymous_status, _) = server.get_html("/p/krypton/timeline", None).await;
+    assert_eq!(anonymous_status, StatusCode::SEE_OTHER);
+
+    let (status, page) = server.get_html("/p/krypton/timeline", Some(&session)).await;
+    assert_eq!(status, StatusCode::OK);
+    let old_at = page.find("Approve the publishing contract").unwrap();
+    let new_at = page.find("Implement the publishing contract").unwrap();
+    assert!(
+        old_at < new_at,
+        "default chronology must be oldest first: {page}"
+    );
+    assert!(
+        page.contains("tl-old</a>"),
+        "related event must link: {page}"
+    );
+    assert!(
+        page.contains("superseded"),
+        "supersession must be derived: {page}"
+    );
+    assert!(page.contains("1 timeline resource omitted"), "{page}");
+    assert!(
+        page.contains("timeline record: made by Current user"),
+        "{page}"
+    );
+
+    let (_, descending) = server
+        .get_html("/p/krypton/timeline?order=desc", Some(&session))
+        .await;
+    assert!(
+        descending
+            .find("Implement the publishing contract")
+            .unwrap()
+            < descending.find("Approve the publishing contract").unwrap(),
+        "descending chronology must reverse the stable order: {descending}"
+    );
+
+    let (_, missing_topic) = server
+        .get_html("/p/krypton/timeline?topic=topic-missing", Some(&session))
+        .await;
+    assert!(missing_topic.contains("no published timeline events match this view"));
+    assert!(!missing_topic.contains("Approve the publishing contract"));
+
+    let (_, filtered) = server
+        .get_html("/p/krypton/timeline?q=Implement&order=desc", Some(&session))
+        .await;
+    assert!(filtered.contains("Implement the publishing contract"));
+    assert!(!filtered.contains("Approve the publishing contract"));
+
+    let (status, detail) = server
+        .get_html("/r/krypton/timeline/tl-old", Some(&session))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(detail.contains("Original timeline evidence."), "{detail}");
+}
+
 /// Pushing new content for a slug that already exists must never overwrite what
 /// is on the server: it appends a revision. The previous one stays sealed,
 /// addressable, and byte-identical, and its blob is untouched.

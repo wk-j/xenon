@@ -150,9 +150,10 @@ owned by the token's user.
 }
 ```
 
-`kind` ∈ `artifact | review | analysis | doc | attention | daily`. `slug` may
+`kind` ∈ `artifact | review | analysis | doc | attention | daily | timeline`. `slug` may
 contain slashes (an analysis bundle is `owner/repo/number`); a `daily` slug is
-the bare local date `YYYY-MM-DD`. `files` may be empty.
+the bare local date `YYYY-MM-DD`; a `timeline` slug is its confirmed event id and
+normally carries one `event.md`. `files` may be empty.
 
 → `202 { resource_id, revision_id, missing: [...], unchanged: false, url }` —
 `missing` lists only the digests to upload.
@@ -261,6 +262,7 @@ agent-authored and untrusted.
 
 `/` the activity feed · `/projects` the project list · `/p/<project>` the
 project's activity · `/p/<project>/resources` its resources, filterable by kind ·
+`/p/<project>/timeline?topic=&q=&order=asc|desc` its confirmed history ·
 `/p/<project>/usage` the LLM usage ledger ·
 `/r/<project>/<kind>/<slug>` the resource ·
 `/r/<project>/<kind>/<slug>/@<seq>` a pinned revision · `/register` · `/login` ·

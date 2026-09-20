@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="project-head">
+  <span class="logo logo--lg" style="--h:{{ hue }}" aria-hidden="true">{{ initial }}</span>
+  <h2 class="meta">{{ project }}</h2>
+  {%- if let Some(repo) = github_repo %}
+  <a class="project-head__gh" href="https://github.com/{{ repo }}"
+     target="_blank" rel="noopener noreferrer">{{ repo }} ↗</a>
+  {%- endif %}
+</div>
+
+{% include "projecttabs.html" %}
+
+<form class="timeline-filter" method="get" action="/p/{{ project }}/timeline">
+  <label>search <input name="q" value="{{ search }}" placeholder="summary, topic, or author"></label>
+  {% if !topic_filter.is_empty() %}<input type="hidden" name="topic" value="{{ topic_filter }}">{% endif %}
+  <label>order
+    <select name="order">
+      <option value="asc"{% if order == "asc" %} selected{% endif %}>oldest first</option>
+      <option value="desc"{% if order == "desc" %} selected{% endif %}>newest first</option>
+    </select>
+  </label>
+  <button type="submit">apply</button>
+</form>
+
+{% if !topics.is_empty() %}
+<div class="kinds timeline-topics">
+  <a href="{{ all_topics_href }}"
+     class="{% if topic_filter.is_empty() %}on{% endif %}">all topics</a>
+  {%- for topic in topics %}
+  <a href="{{ topic.href }}" class="k--timeline{% if topic.selected %} on{% endif %}">{{ topic.title }}<span class="kinds__n">{{ topic.count }}</span></a>
+  {%- endfor %}
+</div>
+{% endif %}
+
+{% if diagnostic_count > 0 %}
+<p class="notice">{{ diagnostic_count }} timeline resource{% if diagnostic_count != 1 %}s{% endif %} omitted because its published metadata is invalid. Open it from resources to inspect the original.</p>
+{% endif %}
+
+{% if events.is_empty() %}
+<p class="empty">no published timeline events match this view</p>
+{% else %}
+<ol class="timeline-list">
+  {%- for event in events %}
+  <li class="timeline-event{% if event.superseded %} is-superseded{% endif %}">
+    <div class="timeline-event__time"><time title="{{ event.occurred_exact }}">{{ event.occurred }}</time></div>
+    <div class="timeline-event__body">
+      <h3><a href="{{ event.href }}">{{ event.summary }}</a></h3>
+      <div class="meta timeline-event__meta">
+        <span class="pill k k--timeline">{{ event.topic_title }}</span>
+        <span>timeline record: made by {{ event.made_by }}</span>
+        {% if event.source_present %}<span>· source recorded</span>{% endif %}
+        {% if event.superseded %}<span>· superseded</span>{% endif %}
+      </div>
+      {% if let Some(relation) = event.relation %}
+      <div class="meta timeline-event__relation">{{ relation }}
+        {% if let Some(related) = event.related_event %}
+          {% if let Some(href) = event.related_href %}<a href="{{ href }}">{{ related }}</a>{% else %}{{ related }} (not published){% endif %}
+        {% endif %}
+      </div>
+      {% endif %}
+      <div class="meta timeline-event__id">{{ event.event_id }}</div>
+    </div>
+  </li>
+  {%- endfor %}
+</ol>
+{% endif %}
+{% endblock %}

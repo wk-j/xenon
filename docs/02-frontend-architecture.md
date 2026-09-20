@@ -153,7 +153,7 @@ Stage 1 fixed markdown that rendered as less than it meant. The same class of ga
 level up: `resource_page` picks a file from the revision and renders its bytes, so a resource with
 **no** files fell to `<p class="empty">this revision has no files</p>`.
 
-That is exactly wrong for `attention`. Four of the five kinds carry their substance on disk and use
+That is exactly wrong for `attention`. Most resource kinds carry their substance on disk and use
 `meta` as a breadcrumb (`{"source": ".krypton/reviews"}`, `{"lane": "…"}`). A judgement item has no
 on-disk form at all — Krypton's `attention_flag` writes the question, the option the lane chose, the
 rationale, the trade-offs it rejected and its stated uncertainty into `meta` and nothing else. So the
@@ -258,7 +258,7 @@ actually matters here is who maintains the code. Recorded so the argument is not
 The browse UI inherited Krypton's `DESIGN.binance.md`: one canvas, one yellow accent, green and
 red as semantics, everything else grey. That rule is right for the surfaces it was written for
 (dashboards and one-off artifacts, where nothing is categorical), and wrong here. Xenon's whole
-model is **five kinds of resource**, and all five rendered as the same grey chip, so the one axis
+model is **seven kinds of resource**, and all seven rendered as the same grey chip, so the one axis
 the product is organised around was the one thing the page did not show.
 
 Each kind now owns a hue. Declared once in `:root`, selected by a `k--<kind>` class that sets a
@@ -272,6 +272,7 @@ single `--k` variable, so a component reads `var(--k)` and never names a kind:
 | `analysis` | `oklch(.78 .14 340)` magenta | |
 | `attention` | `oklch(.80 .13 55)` amber | the only kind that is a request to a human, so it sits warm |
 | `daily` | `oklch(.80 .12 150)` green | the one kind that is a record of *time* rather than of work; sits alone in the empty 55–195 arc so a day never reads as a near-miss of another kind |
+| `timeline` | `oklch(.80 .10 225)` blue | confirmed chronology; categorical rather than a success, warning, or destructive state |
 
 Rules that keep this a legend rather than decoration:
 
@@ -306,7 +307,7 @@ paint is already the right one.
 
 ### Stage 5 — Counts on the kind filter (2026-08-10)
 
-The kind row said which kinds *can* exist, never how many of each *do*. Five chips looked identical
+The kind row said which kinds *can* exist, never how many of each *do*. The chips looked identical
 whether a kind held forty resources or none, so the only way to learn a kind was empty was to click
 it and read "nothing of that kind here yet" — a click that answers a question the row was already in
 the right place to answer.
@@ -319,11 +320,24 @@ hold this together:
   nothing on. A legend whose numbers move when you use it is not a legend.
 - **They are also independent of the `LIMIT 500` on the listing.** The chips report what exists; the
   grid below shows one page of it.
-- **An empty kind still renders**, dimmed via `is-empty`, saying `0`. The row is a fixed set of five;
+- **An empty kind still renders**, dimmed via `is-empty`, saying `0`. The row is a fixed set of seven;
   a chip that appears and disappears costs more to aim at than one that admits it is empty.
 
 The number is dimmed against whatever colour its chip is wearing (`opacity`, not a fixed ink), so it
 survives both the resting hue and the filled `on` state without a second rule per kind.
+
+### Stage 7 — Project timeline (2026-09-20)
+
+`/p/<project>/timeline` projects the latest sealed revision of every `timeline` resource into a
+server-rendered chronology. The producer supplies bounded list metadata and the original
+`event.md`; Xenon never mutates, confirms, or reconstructs a local project record.
+
+The route uses the same session and project-visibility check as the other project pages. It accepts
+ordinary GET filters for topic, free-text search, and ascending/descending order. Rows sort by the
+event's occurrence time, then recording time, then id. A `supersedes` edge derives the older row's
+state at read time, and related ids become links only when that target is published in the same
+project. Malformed projections remain inspectable through Resources but are omitted from the
+chronology with a visible count. The page adds no JavaScript, polling, or write endpoint.
 
 ### Configuration
 

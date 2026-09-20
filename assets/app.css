@@ -4,7 +4,7 @@
 /* Lifted red for 11px type on a surface tinted with `--del` (4.07:1 if the
    raw red is used as ink). Light mode swaps this for a darker sibling. */
 --sev-ink-blocking:oklch(.79 .15 22);
-/* Kind hues. Xenon stores exactly five kinds and they were all the same grey
+/* Kind hues. Xenon stores seven kinds and they were all the same grey
    pill, so the one genuinely categorical axis in the product was invisible.
    One hue each, spaced around the wheel and kept clear of the three colours
    that already mean something here: yellow = action/selection, green = success,
@@ -18,6 +18,7 @@
 --k-doc:oklch(.80 .11 250);
 --k-attention:oklch(.80 .13 55);
 --k-daily:oklch(.80 .12 150);
+--k-timeline:oklch(.80 .10 225);
 --k:var(--accent);
 /* Project monogram lightness. Tracks the kind-hue band so a logo that lands
    near green or red still reads as identity, not a verdict. */
@@ -36,6 +37,7 @@ html[data-theme="light"]{--bg:#f4f5f7;--fg:#1e2329;--text:#474d57;--muted:#707a8
 --k-artifact:oklch(.45 .11 195);--k-review:oklch(.45 .13 300);
 --k-analysis:oklch(.45 .14 340);--k-doc:oklch(.45 .11 250);
 --k-attention:oklch(.48 .13 55);--k-daily:oklch(.45 .12 150);
+--k-timeline:oklch(.45 .10 225);
 --logo-l:.48;color-scheme:light}
 .k--artifact{--k:var(--k-artifact)}
 .k--review{--k:var(--k-review)}
@@ -43,6 +45,7 @@ html[data-theme="light"]{--bg:#f4f5f7;--fg:#1e2329;--text:#474d57;--muted:#707a8
 .k--doc{--k:var(--k-doc)}
 .k--attention{--k:var(--k-attention)}
 .k--daily{--k:var(--k-daily)}
+.k--timeline{--k:var(--k-timeline)}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 var(--sans)}
 a{color:var(--accent);text-decoration:none}
@@ -380,6 +383,28 @@ border-bottom:1px solid var(--border);font:11px/1 var(--mono);letter-spacing:.04
 .tabs a{color:var(--muted)}
 .tabs a:hover{color:var(--accent);text-decoration:none}
 .tabs a.on{color:var(--fg)}
+
+/* Confirmed project history. Rules carry chronology without turning every
+   event into a nested card; attribution is explicitly the record's claim. */
+.timeline-filter{display:flex;align-items:end;gap:10px;flex-wrap:wrap;margin:0 0 14px;
+font:11px/1.4 var(--mono);color:var(--muted)}
+.timeline-filter label{display:flex;flex-direction:column;gap:4px}
+.timeline-filter input,.timeline-filter select{min-height:32px;background:var(--code-bg);
+border:1px solid var(--border);border-radius:5px;color:var(--fg);font:12px var(--mono);padding:6px 8px}
+.timeline-filter input{width:min(360px,70vw)}
+.timeline-filter button{min-height:32px;background:var(--accent);border:1px solid var(--accent);
+border-radius:5px;color:var(--bg);font:600 11px var(--mono);padding:6px 12px;cursor:pointer}
+.timeline-topics{margin-bottom:18px}
+.timeline-list{margin:0;padding:0;list-style:none;border-top:1px solid var(--border)}
+.timeline-event{display:grid;grid-template-columns:11.5em minmax(0,1fr);gap:18px;
+padding:12px 2px;border-bottom:1px solid var(--border)}
+.timeline-event__time{font:11px/1.6 var(--mono);color:var(--muted);white-space:nowrap}
+.timeline-event h3{margin:0 0 5px;font:600 14px/1.45 var(--sans)}
+.timeline-event__meta{display:flex;align-items:baseline;gap:5px;flex-wrap:wrap}
+.timeline-event__relation,.timeline-event__id{margin-top:5px;font:10px/1.5 var(--mono)}
+.timeline-event.is-superseded h3 a{color:var(--muted);text-decoration:line-through;
+text-decoration-color:var(--border)}
+@media (max-width:680px){.timeline-event{grid-template-columns:1fr;gap:3px}}
 
 /* A numeric table is read down its columns, so every figure is right-aligned
    and only the cells that NAME a thing stay left. `tabular-nums` on table.data
