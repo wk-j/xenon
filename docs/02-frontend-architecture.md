@@ -329,15 +329,17 @@ survives both the resting hue and the filled `on` state without a second rule pe
 ### Stage 7 — Project timeline (2026-09-20)
 
 `/p/<project>/timeline` projects the latest sealed revision of every `timeline` resource into a
-server-rendered chronology. The producer supplies bounded list metadata and the original
-`event.md`; Xenon never mutates, confirms, or reconstructs a local project record.
+server-rendered topic table. Each topic links to `/p/<project>/timeline/<topic-id>`, where its
+events form a chronology. The producer supplies bounded list metadata and the original `event.md`;
+Xenon never mutates, confirms, or reconstructs a local project record.
 
-The route uses the same session and project-visibility check as the other project pages. It accepts
-ordinary GET filters for topic, free-text search, and ascending/descending order. Rows sort by the
-event's occurrence time, then recording time, then id. A `supersedes` edge derives the older row's
-state at read time, and related ids become links only when that target is published in the same
-project. Malformed projections remain inspectable through Resources but are omitted from the
-chronology with a visible count. The page adds no JavaScript, polling, or write endpoint.
+Both routes use the same session and project-visibility check as the other project pages. The index
+searches topics using their titles and event metadata. The detail page filters its event summaries
+and authors and supports ascending/descending order. Rows sort by the event's occurrence time, then
+recording time, then id. A `supersedes` edge derives the older row's state at read time, and related
+ids become links only when that target is published in the same project. Malformed projections
+remain inspectable through Resources but are omitted from the topic table with a visible count. The
+pages add no JavaScript, polling, or write endpoint.
 
 ### Configuration
 

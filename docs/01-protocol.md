@@ -262,7 +262,8 @@ agent-authored and untrusted.
 
 `/` the activity feed · `/projects` the project list · `/p/<project>` the
 project's activity · `/p/<project>/resources` its resources, filterable by kind ·
-`/p/<project>/timeline?topic=&q=&order=asc|desc` its confirmed history ·
+`/p/<project>/timeline?q=` its confirmed-history topics ·
+`/p/<project>/timeline/<topic-id>?q=&order=asc|desc` one topic's confirmed history ·
 `/p/<project>/usage` the LLM usage ledger ·
 `/r/<project>/<kind>/<slug>` the resource ·
 `/r/<project>/<kind>/<slug>/@<seq>` a pinned revision · `/register` · `/login` ·

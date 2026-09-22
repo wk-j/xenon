@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="project-head">
+  <span class="logo logo--lg" style="--h:{{ hue }}" aria-hidden="true">{{ initial }}</span>
+  <h2 class="meta">{{ project }}</h2>
+  {%- if let Some(repo) = github_repo %}
+  <a class="project-head__gh" href="https://github.com/{{ repo }}"
+     target="_blank" rel="noopener noreferrer">{{ repo }} ↗</a>
+  {%- endif %}
+</div>
+
+{% include "projecttabs.html" %}
+
+<div class="timeline-topic-head">
+  <h2>{{ topic_title }}</h2>
+  <p class="meta">{{ event_count }} published event{% if event_count != 1 %}s{% endif %}</p>
+</div>
+
+<form class="timeline-filter" method="get" action="{{ topic_href }}">
+  <label>search <input name="q" value="{{ search }}" placeholder="summary or author"></label>
+  <label>order
+    <select name="order">
+      <option value="asc"{% if order == "asc" %} selected{% endif %}>oldest first</option>
+      <option value="desc"{% if order == "desc" %} selected{% endif %}>newest first</option>
+    </select>
+  </label>
+  <button type="submit">apply</button>
+</form>
+
+{% if events.is_empty() %}
+<p class="empty">no published timeline events match this view</p>
+{% else %}
+<ol class="timeline-list">
+  {%- for event in events %}
+  <li class="timeline-event{% if event.superseded %} is-superseded{% endif %}">
+    <div class="timeline-event__time"><time title="{{ event.occurred_exact }}">{{ event.occurred }}</time></div>
+    <div class="timeline-event__body">
+      <h3><a href="{{ event.href }}">{{ event.summary }}</a></h3>
+      <div class="meta timeline-event__meta">
+        <span>made by {{ event.made_by }}</span>
+        {% if event.source_present %}<span>· source recorded</span>{% endif %}
+        {% if event.superseded %}<span>· superseded</span>{% endif %}
+      </div>
+      {% if let Some(relation) = event.relation %}
+      <div class="meta timeline-event__relation">{{ relation }}
+        {% if let Some(related) = event.related_event %}
+          {% if let Some(href) = event.related_href %}<a href="{{ href }}">{{ related }}</a>{% else %}{{ related }} (not published){% endif %}
+        {% endif %}
+      </div>
+      {% endif %}
+      <div class="meta timeline-event__id">{{ event.event_id }}</div>
+    </div>
+  </li>
+  {%- endfor %}
+</ol>
+{% endif %}
+{% endblock %}

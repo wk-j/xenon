@@ -2522,7 +2522,7 @@ async fn deep_pages_carry_a_breadcrumb_trail_back_to_the_root() {
 }
 
 #[tokio::test]
-async fn timeline_resources_render_as_a_chronology_and_keep_their_markdown_permalink() {
+async fn timeline_topics_render_as_a_table_with_chronology_on_a_detail_page() {
     let server = Server::start();
     let session = server.register_first().await;
     let token = server
@@ -2627,28 +2627,49 @@ async fn timeline_resources_render_as_a_chronology_and_keep_their_markdown_perma
 
     let (status, page) = server.get_html("/p/krypton/timeline", Some(&session)).await;
     assert_eq!(status, StatusCode::OK);
-    let old_at = page.find("Approve the publishing contract").unwrap();
-    let new_at = page.find("Implement the publishing contract").unwrap();
+    assert!(page.contains("timeline-topic-table"), "{page}");
+    assert!(page.contains("Timeline publishing"), "{page}");
+    assert!(page.contains("<td>2</td>"), "{page}");
     assert!(
-        old_at < new_at,
-        "default chronology must be oldest first: {page}"
-    );
-    assert!(
-        page.contains("tl-old</a>"),
-        "related event must link: {page}"
-    );
-    assert!(
-        page.contains("superseded"),
-        "supersession must be derived: {page}"
+        !page.contains("Approve the publishing contract"),
+        "event detail belongs on the topic page: {page}"
     );
     assert!(page.contains("1 timeline resource omitted"), "{page}");
+
+    let (detail_status, detail_page) = server
+        .get_html("/p/krypton/timeline/topic-publishing", Some(&session))
+        .await;
+    assert_eq!(detail_status, StatusCode::OK);
+    let old_at = detail_page.find("Approve the publishing contract").unwrap();
+    let new_at = detail_page
+        .find("Implement the publishing contract")
+        .unwrap();
     assert!(
-        page.contains("timeline record: made by Current user"),
-        "{page}"
+        old_at < new_at,
+        "default chronology must be oldest first: {detail_page}"
+    );
+    assert!(
+        detail_page.contains("tl-old</a>"),
+        "related event must link: {detail_page}"
+    );
+    assert!(
+        detail_page.contains("superseded"),
+        "supersession must be derived: {detail_page}"
+    );
+    assert!(
+        detail_page.contains("made by Current user"),
+        "{detail_page}"
+    );
+    assert!(
+        !detail_page.contains("pill k k--timeline"),
+        "topic detail must not repeat the topic as a tag on every event: {detail_page}"
     );
 
     let (_, descending) = server
-        .get_html("/p/krypton/timeline?order=desc", Some(&session))
+        .get_html(
+            "/p/krypton/timeline/topic-publishing?order=desc",
+            Some(&session),
+        )
         .await;
     assert!(
         descending
@@ -2658,14 +2679,28 @@ async fn timeline_resources_render_as_a_chronology_and_keep_their_markdown_perma
         "descending chronology must reverse the stable order: {descending}"
     );
 
-    let (_, missing_topic) = server
-        .get_html("/p/krypton/timeline?topic=topic-missing", Some(&session))
+    let (missing_status, _) = server
+        .get_html("/p/krypton/timeline/topic-missing", Some(&session))
         .await;
-    assert!(missing_topic.contains("no published timeline events match this view"));
-    assert!(!missing_topic.contains("Approve the publishing contract"));
+    assert_eq!(missing_status, StatusCode::NOT_FOUND);
+
+    let (legacy_status, legacy_location) = server
+        .get_location_cookie(
+            "/p/krypton/timeline?topic=topic-publishing&q=Implement&order=desc",
+            Some(&format!("xenon_session={session}")),
+        )
+        .await;
+    assert_eq!(legacy_status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        legacy_location,
+        "/p/krypton/timeline/topic-publishing?q=Implement&order=desc"
+    );
 
     let (_, filtered) = server
-        .get_html("/p/krypton/timeline?q=Implement&order=desc", Some(&session))
+        .get_html(
+            "/p/krypton/timeline/topic-publishing?q=Implement&order=desc",
+            Some(&session),
+        )
         .await;
     assert!(filtered.contains("Implement the publishing contract"));
     assert!(!filtered.contains("Approve the publishing contract"));

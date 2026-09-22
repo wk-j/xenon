@@ -394,7 +394,11 @@ border:1px solid var(--border);border-radius:5px;color:var(--fg);font:12px var(-
 .timeline-filter input{width:min(360px,70vw)}
 .timeline-filter button{min-height:32px;background:var(--accent);border:1px solid var(--accent);
 border-radius:5px;color:var(--bg);font:600 11px var(--mono);padding:6px 12px;cursor:pointer}
-.timeline-topics{margin-bottom:18px}
+.timeline-topic-table td:nth-child(n+2),.timeline-topic-table th:nth-child(n+2){white-space:nowrap}
+.timeline-topic-table td:nth-child(2),.timeline-topic-table th:nth-child(2){text-align:right}
+.timeline-topic-head{margin:20px 0 14px}
+.timeline-topic-head h2{margin:0 0 4px;font:600 18px/1.4 var(--sans)}
+.timeline-topic-head p{margin:0}
 .timeline-list{margin:0;padding:0;list-style:none;border-top:1px solid var(--border)}
 .timeline-event{display:grid;grid-template-columns:11.5em minmax(0,1fr);gap:18px;
 padding:12px 2px;border-bottom:1px solid var(--border)}

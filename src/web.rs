@@ -412,11 +412,7 @@ struct TimelineTemplate {
     github_repo: Option<String>,
     tab: &'static str,
     topics: Vec<TimelineTopic>,
-    all_topics_href: String,
-    events: Vec<TimelineRow>,
-    topic_filter: String,
     search: String,
-    order: &'static str,
     diagnostic_count: usize,
 }
 
@@ -424,13 +420,36 @@ struct TimelineTopic {
     title: String,
     count: usize,
     href: String,
-    selected: bool,
+    first: String,
+    first_exact: String,
+    latest: String,
+    latest_exact: String,
+}
+
+#[derive(askama::Template)]
+#[template(path = "timeline_topic.html")]
+struct TimelineTopicTemplate {
+    title: String,
+    css_url: String,
+    app_js_url: String,
+    crumbs: Vec<Crumb>,
+    nav: Nav,
+    project: String,
+    initial: String,
+    hue: u16,
+    github_repo: Option<String>,
+    tab: &'static str,
+    topic_title: String,
+    topic_href: String,
+    event_count: usize,
+    events: Vec<TimelineRow>,
+    search: String,
+    order: &'static str,
 }
 
 struct TimelineRow {
     event_id: String,
     summary: String,
-    topic_title: String,
     occurred: String,
     occurred_exact: String,
     made_by: String,
@@ -464,6 +483,16 @@ struct TimelineMeta {
 
 struct TimelineEventView {
     meta: TimelineMeta,
+}
+
+struct TimelineTopicData {
+    title: String,
+    count: usize,
+    first_ms: i64,
+    first_exact: String,
+    latest_ms: i64,
+    latest_exact: String,
+    matches_search: bool,
 }
 
 #[derive(askama::Template)]
@@ -945,6 +974,10 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/p/{project}", get(project_page))
         .route("/p/{project}/resources", get(project_resources_page))
         .route("/p/{project}/timeline", get(project_timeline_page))
+        .route(
+            "/p/{project}/timeline/{topic}",
+            get(project_timeline_topic_page),
+        )
         .route("/p/{project}/usage", get(usage_page))
         .route("/r/{project}/{kind}/{*slug}", get(resource_page))
 }
@@ -1229,6 +1262,27 @@ fn project_crumbs(project: &str, here: Option<&str>) -> Vec<Crumb> {
     crumbs
 }
 
+fn timeline_topic_crumbs(project: &str, topic: &str) -> Vec<Crumb> {
+    vec![
+        Crumb {
+            label: "projects".to_string(),
+            href: Some("/projects".to_string()),
+        },
+        Crumb {
+            label: project.to_string(),
+            href: Some(format!("/p/{}", urlencode(project))),
+        },
+        Crumb {
+            label: "timeline".to_string(),
+            href: Some(format!("/p/{}/timeline", urlencode(project))),
+        },
+        Crumb {
+            label: topic.to_string(),
+            href: None,
+        },
+    ]
+}
+
 /// One event as a sentence: actor, verb, object. The verb is the only place the
 /// event kinds differ, so it is the only thing that switches on kind.
 fn feed_row(e: &event::EventView, now: i64) -> FeedRow {
@@ -1465,6 +1519,12 @@ pub struct TimelineQuery {
     order: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct TimelineTopicQuery {
+    q: Option<String>,
+    order: Option<String>,
+}
+
 async fn project_timeline_page(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1476,9 +1536,175 @@ async fn project_timeline_page(
     if !has_browser_session(&actor) {
         return Ok(redirect_to_login());
     }
+    let search = query.q.unwrap_or_default().trim().to_string();
+    let order = timeline_order(query.order.as_deref());
+    if let Some(topic) = query
+        .topic
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(
+            Redirect::to(&timeline_topic_url(&project, topic, &search, order)).into_response(),
+        );
+    }
     let conn = state.db();
     let project_id = readable_project(&conn, actor.as_ref(), &project)?;
     let github_repo = project_github_repo(&conn, &project_id)?;
+    let (all, diagnostic_count) = load_timeline_events(&conn, &project_id)?;
+    drop(conn);
+
+    let search_folded = search.to_lowercase();
+    let mut topic_data = std::collections::HashMap::<String, TimelineTopicData>::new();
+    for event in &all {
+        let event_matches = search_folded.is_empty()
+            || event
+                .meta
+                .topic_title
+                .to_lowercase()
+                .contains(&search_folded)
+            || event.meta.summary.to_lowercase().contains(&search_folded)
+            || event.meta.made_by.to_lowercase().contains(&search_folded);
+        let entry = topic_data
+            .entry(event.meta.topic_id.clone())
+            .or_insert_with(|| TimelineTopicData {
+                title: event.meta.topic_title.clone(),
+                count: 0,
+                first_ms: event.meta.occurred_at_ms,
+                first_exact: event.meta.occurred_at.clone(),
+                latest_ms: event.meta.occurred_at_ms,
+                latest_exact: event.meta.occurred_at.clone(),
+                matches_search: false,
+            });
+        entry.count += 1;
+        if event.meta.occurred_at_ms < entry.first_ms {
+            entry.first_ms = event.meta.occurred_at_ms;
+            entry.first_exact = event.meta.occurred_at.clone();
+        }
+        if event.meta.occurred_at_ms >= entry.latest_ms {
+            entry.title = event.meta.topic_title.clone();
+            entry.latest_ms = event.meta.occurred_at_ms;
+            entry.latest_exact = event.meta.occurred_at.clone();
+        }
+        entry.matches_search |= event_matches;
+    }
+
+    let mut topics: Vec<TimelineTopic> = topic_data
+        .into_iter()
+        .filter(|(_, topic)| topic.matches_search)
+        .map(|(id, topic)| TimelineTopic {
+            href: timeline_topic_url(&project, &id, "", "asc"),
+            title: topic.title,
+            count: topic.count,
+            first: crate::util::format_ymd_hms(topic.first_ms / 1000),
+            first_exact: topic.first_exact,
+            latest: crate::util::format_ymd_hms(topic.latest_ms / 1000),
+            latest_exact: topic.latest_exact,
+        })
+        .collect();
+    topics.sort_by_key(|topic| topic.title.to_lowercase());
+
+    let (title, css_url, app_js_url) = chrome(&format!("{project} timeline"));
+    Ok(render(&TimelineTemplate {
+        title,
+        css_url,
+        app_js_url,
+        crumbs: project_crumbs(&project, Some("timeline")),
+        nav,
+        initial: logo_initial(&project),
+        hue: logo_hue(&project),
+        github_repo,
+        project,
+        tab: "timeline",
+        topics,
+        search,
+        diagnostic_count,
+    })?
+    .into_response())
+}
+
+async fn project_timeline_topic_page(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Path((project, topic_id)): Path<(String, String)>,
+    Query(query): Query<TimelineTopicQuery>,
+) -> AppResult<Response> {
+    let (actor, nav) = viewer(&state, &headers, &uri);
+    if !has_browser_session(&actor) {
+        return Ok(redirect_to_login());
+    }
+    let conn = state.db();
+    let project_id = readable_project(&conn, actor.as_ref(), &project)?;
+    let github_repo = project_github_repo(&conn, &project_id)?;
+    let (all, _) = load_timeline_events(&conn, &project_id)?;
+    drop(conn);
+
+    let topic_title = all
+        .iter()
+        .filter(|event| event.meta.topic_id == topic_id)
+        .max_by_key(|event| event.meta.occurred_at_ms)
+        .map(|event| event.meta.topic_title.clone())
+        .ok_or_else(|| AppError::not_found("no such timeline topic"))?;
+    let event_count = all
+        .iter()
+        .filter(|event| event.meta.topic_id == topic_id)
+        .count();
+    let event_ids: std::collections::HashSet<&str> = all
+        .iter()
+        .map(|event| event.meta.event_id.as_str())
+        .collect();
+    let superseded: std::collections::HashSet<&str> = all
+        .iter()
+        .filter(|event| event.meta.relation.as_deref() == Some("supersedes"))
+        .filter_map(|event| event.meta.related_event.as_deref())
+        .collect();
+
+    let search = query.q.unwrap_or_default().trim().to_string();
+    let search_folded = search.to_lowercase();
+    let order = timeline_order(query.order.as_deref());
+    let mut filtered: Vec<&TimelineEventView> = all
+        .iter()
+        .filter(|event| event.meta.topic_id == topic_id)
+        .filter(|event| {
+            search_folded.is_empty()
+                || event.meta.summary.to_lowercase().contains(&search_folded)
+                || event.meta.made_by.to_lowercase().contains(&search_folded)
+        })
+        .collect();
+    sort_timeline_events(&mut filtered, order);
+    let events = timeline_rows(filtered, &project, &event_ids, &superseded);
+
+    let (title, css_url, app_js_url) = chrome(&format!("{topic_title} · {project} timeline"));
+    Ok(render(&TimelineTopicTemplate {
+        title,
+        css_url,
+        app_js_url,
+        crumbs: timeline_topic_crumbs(&project, &topic_title),
+        nav,
+        initial: logo_initial(&project),
+        hue: logo_hue(&project),
+        github_repo,
+        project: project.clone(),
+        tab: "timeline",
+        topic_title,
+        topic_href: format!(
+            "/p/{}/timeline/{}",
+            urlencode(&project),
+            urlencode(&topic_id)
+        ),
+        event_count,
+        events,
+        search,
+        order,
+    })?
+    .into_response())
+}
+
+fn load_timeline_events(
+    conn: &Connection,
+    project_id: &str,
+) -> AppResult<(Vec<TimelineEventView>, usize)> {
     let mut stmt = conn.prepare(
         "SELECT r.slug, v.meta,
                 EXISTS(SELECT 1 FROM rev_file f
@@ -1498,7 +1724,6 @@ async fn project_timeline_page(
         })?
         .collect::<Result<Vec<_>, _>>()?;
     drop(stmt);
-    drop(conn);
 
     let mut diagnostic_count = 0;
     let mut all = Vec::new();
@@ -1513,67 +1738,19 @@ async fn project_timeline_page(
         }
         all.push(TimelineEventView { meta });
     }
+    Ok((all, diagnostic_count))
+}
 
-    let event_ids: std::collections::HashSet<&str> = all
-        .iter()
-        .map(|event| event.meta.event_id.as_str())
-        .collect();
-    let superseded: std::collections::HashSet<&str> = all
-        .iter()
-        .filter(|event| event.meta.relation.as_deref() == Some("supersedes"))
-        .filter_map(|event| event.meta.related_event.as_deref())
-        .collect();
-
-    let mut topic_data = std::collections::HashMap::<String, (String, i64, usize)>::new();
-    for event in &all {
-        let entry = topic_data
-            .entry(event.meta.topic_id.clone())
-            .or_insert_with(|| (event.meta.topic_title.clone(), event.meta.occurred_at_ms, 0));
-        entry.2 += 1;
-        if event.meta.occurred_at_ms >= entry.1 {
-            entry.0 = event.meta.topic_title.clone();
-            entry.1 = event.meta.occurred_at_ms;
-        }
-    }
-
-    let topic_filter = query.topic.unwrap_or_default().trim().to_string();
-    let search = query.q.unwrap_or_default().trim().to_string();
-    let search_folded = search.to_lowercase();
-    let order = if query.order.as_deref() == Some("desc") {
+fn timeline_order(raw: Option<&str>) -> &'static str {
+    if raw == Some("desc") {
         "desc"
     } else {
         "asc"
-    };
-    let mut topics: Vec<TimelineTopic> = topic_data
-        .into_iter()
-        .map(|(id, (title, _, count))| TimelineTopic {
-            selected: topic_filter == id || topic_filter == title,
-            href: timeline_url(&project, Some(&id), &search, order),
-            title,
-            count,
-        })
-        .collect();
-    topics.sort_by_key(|topic| topic.title.to_lowercase());
+    }
+}
 
-    let mut filtered: Vec<&TimelineEventView> = all
-        .iter()
-        .filter(|event| {
-            topic_filter.is_empty()
-                || event.meta.topic_id == topic_filter
-                || event.meta.topic_title == topic_filter
-        })
-        .filter(|event| {
-            search_folded.is_empty()
-                || event.meta.summary.to_lowercase().contains(&search_folded)
-                || event
-                    .meta
-                    .topic_title
-                    .to_lowercase()
-                    .contains(&search_folded)
-                || event.meta.made_by.to_lowercase().contains(&search_folded)
-        })
-        .collect();
-    filtered.sort_by(|left, right| {
+fn sort_timeline_events(events: &mut Vec<&TimelineEventView>, order: &str) {
+    events.sort_by(|left, right| {
         left.meta
             .occurred_at_ms
             .cmp(&right.meta.occurred_at_ms)
@@ -1581,22 +1758,28 @@ async fn project_timeline_page(
             .then(left.meta.event_id.cmp(&right.meta.event_id))
     });
     if order == "desc" {
-        filtered.reverse();
+        events.reverse();
     }
+}
 
-    let events = filtered
+fn timeline_rows(
+    events: Vec<&TimelineEventView>,
+    project: &str,
+    event_ids: &std::collections::HashSet<&str>,
+    superseded: &std::collections::HashSet<&str>,
+) -> Vec<TimelineRow> {
+    events
         .into_iter()
         .map(|event| {
             let related_event = event.meta.related_event.clone();
             let related_href = related_event.as_deref().and_then(|id| {
                 event_ids
                     .contains(id)
-                    .then(|| format!("/r/{}/timeline/{}", urlencode(&project), urlencode(id)))
+                    .then(|| format!("/r/{}/timeline/{}", urlencode(project), urlencode(id)))
             });
             TimelineRow {
                 event_id: event.meta.event_id.clone(),
                 summary: event.meta.summary.clone(),
-                topic_title: event.meta.topic_title.clone(),
                 occurred: crate::util::format_ymd_hms(event.meta.occurred_at_ms / 1000),
                 occurred_exact: event.meta.occurred_at.clone(),
                 made_by: event.meta.made_by.clone(),
@@ -1608,7 +1791,7 @@ async fn project_timeline_page(
                 superseded: superseded.contains(event.meta.event_id.as_str()),
                 href: format!(
                     "/r/{}/timeline/{}",
-                    urlencode(&project),
+                    urlencode(project),
                     urlencode(&event.meta.event_id)
                 ),
                 relation: event.meta.relation.clone(),
@@ -1616,30 +1799,7 @@ async fn project_timeline_page(
                 related_href,
             }
         })
-        .collect();
-
-    let (title, css_url, app_js_url) = chrome(&format!("{project} timeline"));
-    let all_topics_href = timeline_url(&project, None, &search, order);
-    Ok(render(&TimelineTemplate {
-        title,
-        css_url,
-        app_js_url,
-        crumbs: project_crumbs(&project, Some("timeline")),
-        nav,
-        initial: logo_initial(&project),
-        hue: logo_hue(&project),
-        github_repo,
-        project,
-        tab: "timeline",
-        topics,
-        all_topics_href,
-        events,
-        topic_filter,
-        search,
-        order,
-        diagnostic_count,
-    })?
-    .into_response())
+        .collect()
 }
 
 fn valid_timeline_meta(meta: &TimelineMeta, slug: &str) -> bool {
@@ -1688,18 +1848,15 @@ fn bounded_single_line(value: &str, max_chars: usize) -> bool {
     !value.trim().is_empty() && value.chars().count() <= max_chars && !value.contains(['\r', '\n'])
 }
 
-fn timeline_url(project: &str, topic: Option<&str>, search: &str, order: &str) -> String {
+fn timeline_topic_url(project: &str, topic: &str, search: &str, order: &str) -> String {
     let mut pairs = Vec::new();
-    if let Some(topic) = topic.filter(|value| !value.is_empty()) {
-        pairs.push(format!("topic={}", urlencode(topic)));
-    }
     if !search.is_empty() {
         pairs.push(format!("q={}", urlencode(search)));
     }
     if order == "desc" {
         pairs.push("order=desc".to_string());
     }
-    let mut url = format!("/p/{}/timeline", urlencode(project));
+    let mut url = format!("/p/{}/timeline/{}", urlencode(project), urlencode(topic));
     if !pairs.is_empty() {
         url.push('?');
         url.push_str(&pairs.join("&"));
