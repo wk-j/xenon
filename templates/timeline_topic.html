@@ -28,31 +28,38 @@
   <button type="submit">apply</button>
 </form>
 
-{% if events.is_empty() %}
+{% if days.is_empty() %}
 <p class="empty">no published timeline events match this view</p>
 {% else %}
-<ol class="timeline-list">
-  {%- for event in events %}
-  <li class="timeline-event{% if event.superseded %} is-superseded{% endif %}">
-    <div class="timeline-event__time"><time title="{{ event.occurred_exact }}">{{ event.occurred }}</time></div>
-    <div class="timeline-event__body">
-      <h3><a href="{{ event.href }}">{{ event.summary }}</a></h3>
-      <div class="meta timeline-event__meta">
-        <span>made by {{ event.made_by }}</span>
-        {% if event.source_present %}<span>· source recorded</span>{% endif %}
-        {% if event.superseded %}<span>· superseded</span>{% endif %}
-      </div>
-      {% if let Some(relation) = event.relation %}
-      <div class="meta timeline-event__relation">{{ relation }}
-        {% if let Some(related) = event.related_event %}
-          {% if let Some(href) = event.related_href %}<a href="{{ href }}">{{ related }}</a>{% else %}{{ related }} (not published){% endif %}
-        {% endif %}
-      </div>
-      {% endif %}
-      <div class="meta timeline-event__id">{{ event.event_id }}</div>
-    </div>
-  </li>
+<div class="timeline-days">
+  {%- for day in days %}
+  <section class="timeline-day">
+    <h3 class="timeline-day__date"><time datetime="{{ day.date }}">{{ day.date }}</time></h3>
+    <ol class="timeline-list">
+      {%- for event in day.events %}
+      <li class="timeline-event{% if event.superseded %} is-superseded{% endif %}">
+        <div class="timeline-event__time"><time title="{{ event.occurred_exact }}">{{ event.occurred_time }}</time></div>
+        <div class="timeline-event__body">
+          <h4><a href="{{ event.href }}">{{ event.summary }}</a></h4>
+          <div class="meta timeline-event__meta">
+            <span>made by {{ event.made_by }}</span>
+            {% if event.source_present %}<span>· source recorded</span>{% endif %}
+            {% if event.superseded %}<span>· superseded</span>{% endif %}
+          </div>
+          {% if let Some(relation) = event.relation %}
+          <div class="meta timeline-event__relation">{{ relation }}
+            {% if let Some(related) = event.related_event %}
+              {% if let Some(href) = event.related_href %}<a href="{{ href }}">{{ related }}</a>{% else %}{{ related }} (not published){% endif %}
+            {% endif %}
+          </div>
+          {% endif %}
+          <div class="meta timeline-event__id">{{ event.event_id }}</div>
+        </div>
+      </li>
+      {%- endfor %}
+    </ol>
+  </section>
   {%- endfor %}
-</ol>
+</div>
 {% endif %}
 {% endblock %}

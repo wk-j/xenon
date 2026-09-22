@@ -442,15 +442,21 @@ struct TimelineTopicTemplate {
     topic_title: String,
     topic_href: String,
     event_count: usize,
-    events: Vec<TimelineRow>,
+    days: Vec<TimelineDay>,
     search: String,
     order: &'static str,
+}
+
+struct TimelineDay {
+    date: String,
+    events: Vec<TimelineRow>,
 }
 
 struct TimelineRow {
     event_id: String,
     summary: String,
-    occurred: String,
+    occurred_date: String,
+    occurred_time: String,
     occurred_exact: String,
     made_by: String,
     source_present: bool,
@@ -1674,6 +1680,7 @@ async fn project_timeline_topic_page(
         .collect();
     sort_timeline_events(&mut filtered, order);
     let events = timeline_rows(filtered, &project, &event_ids, &superseded);
+    let days = group_timeline_rows(events);
 
     let (title, css_url, app_js_url) = chrome(&format!("{topic_title} · {project} timeline"));
     Ok(render(&TimelineTopicTemplate {
@@ -1694,7 +1701,7 @@ async fn project_timeline_topic_page(
             urlencode(&topic_id)
         ),
         event_count,
-        events,
+        days,
         search,
         order,
     })?
@@ -1777,10 +1784,12 @@ fn timeline_rows(
                     .contains(id)
                     .then(|| format!("/r/{}/timeline/{}", urlencode(project), urlencode(id)))
             });
+            let occurred_at = event.meta.occurred_at_ms / 1000;
             TimelineRow {
                 event_id: event.meta.event_id.clone(),
                 summary: event.meta.summary.clone(),
-                occurred: crate::util::format_ymd_hms(event.meta.occurred_at_ms / 1000),
+                occurred_date: crate::util::format_ymd(occurred_at),
+                occurred_time: crate::util::format_hms(occurred_at),
                 occurred_exact: event.meta.occurred_at.clone(),
                 made_by: event.meta.made_by.clone(),
                 source_present: event
@@ -1800,6 +1809,21 @@ fn timeline_rows(
             }
         })
         .collect()
+}
+
+fn group_timeline_rows(events: Vec<TimelineRow>) -> Vec<TimelineDay> {
+    let mut days: Vec<TimelineDay> = Vec::new();
+    for event in events {
+        let date = event.occurred_date.clone();
+        match days.last_mut() {
+            Some(day) if day.date == date => day.events.push(event),
+            _ => days.push(TimelineDay {
+                date,
+                events: vec![event],
+            }),
+        }
+    }
+    days
 }
 
 fn valid_timeline_meta(meta: &TimelineMeta, slug: &str) -> bool {

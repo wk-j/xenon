@@ -2601,6 +2601,17 @@ async fn timeline_topics_render_as_a_table_with_chronology_on_a_detail_page() {
     )
     .await;
     assert_eq!(new.status, StatusCode::CREATED, "{:?}", new.body);
+    let next_day = push_event(
+        &server,
+        &token,
+        "tl-next-day",
+        "Publish the timeline release",
+        "2026-09-21T10:00:00+07:00",
+        1_789_959_600_000,
+        None,
+    )
+    .await;
+    assert_eq!(next_day.status, StatusCode::CREATED, "{:?}", next_day.body);
 
     let malformed = server
         .post(
@@ -2629,7 +2640,7 @@ async fn timeline_topics_render_as_a_table_with_chronology_on_a_detail_page() {
     assert_eq!(status, StatusCode::OK);
     assert!(page.contains("timeline-topic-table"), "{page}");
     assert!(page.contains("Timeline publishing"), "{page}");
-    assert!(page.contains("<td>2</td>"), "{page}");
+    assert!(page.contains("<td>3</td>"), "{page}");
     assert!(
         !page.contains("Approve the publishing contract"),
         "event detail belongs on the topic page: {page}"
@@ -2644,9 +2655,28 @@ async fn timeline_topics_render_as_a_table_with_chronology_on_a_detail_page() {
     let new_at = detail_page
         .find("Implement the publishing contract")
         .unwrap();
+    let next_day_at = detail_page.find("Publish the timeline release").unwrap();
     assert!(
-        old_at < new_at,
+        old_at < new_at && new_at < next_day_at,
         "default chronology must be oldest first: {detail_page}"
+    );
+    assert_eq!(
+        detail_page
+            .matches("<time datetime=\"2026-09-20\">2026-09-20</time>")
+            .count(),
+        1,
+        "events on the same date must share one date heading: {detail_page}"
+    );
+    assert_eq!(
+        detail_page
+            .matches("<time datetime=\"2026-09-21\">2026-09-21</time>")
+            .count(),
+        1,
+        "the next date must start a new group: {detail_page}"
+    );
+    assert!(
+        detail_page.contains(">02:00:00</time>") && detail_page.contains(">03:00:00</time>"),
+        "events under a date heading should show time only: {detail_page}"
     );
     assert!(
         detail_page.contains("tl-old</a>"),
@@ -2672,10 +2702,14 @@ async fn timeline_topics_render_as_a_table_with_chronology_on_a_detail_page() {
         )
         .await;
     assert!(
-        descending
-            .find("Implement the publishing contract")
-            .unwrap()
-            < descending.find("Approve the publishing contract").unwrap(),
+        descending.find("Publish the timeline release").unwrap()
+            < descending
+                .find("Implement the publishing contract")
+                .unwrap()
+            && descending
+                .find("Implement the publishing contract")
+                .unwrap()
+                < descending.find("Approve the publishing contract").unwrap(),
         "descending chronology must reverse the stable order: {descending}"
     );
 
@@ -2704,6 +2738,9 @@ async fn timeline_topics_render_as_a_table_with_chronology_on_a_detail_page() {
         .await;
     assert!(filtered.contains("Implement the publishing contract"));
     assert!(!filtered.contains("Approve the publishing contract"));
+    assert!(!filtered.contains("Publish the timeline release"));
+    assert!(filtered.contains("datetime=\"2026-09-20\""));
+    assert!(!filtered.contains("datetime=\"2026-09-21\""));
 
     let (status, detail) = server
         .get_html("/r/krypton/timeline/tl-old", Some(&session))

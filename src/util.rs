@@ -55,9 +55,14 @@ pub fn format_ymd(ts: i64) -> String {
 /// document — a provider's invoice, or a lane's own transcript. "3 min ago"
 /// cannot be lined up with either, so a turn prints its absolute instant.
 pub fn format_ymd_hms(ts: i64) -> String {
+    format!("{} {}", format_ymd(ts), format_hms(ts))
+}
+
+/// `HH:MM:SS` in UTC, for entries underneath a shared date heading.
+pub fn format_hms(ts: i64) -> String {
     let secs = ts.rem_euclid(86_400);
     let (h, m, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
-    format!("{} {h:02}:{m:02}:{s:02}", format_ymd(ts))
+    format!("{h:02}:{m:02}:{s:02}")
 }
 
 /// Days since the epoch → (year, month, day). Howard Hinnant's `civil_from_days`,
@@ -266,6 +271,7 @@ mod tests {
         );
         // Pre-epoch: `rem_euclid` keeps the clock positive where `%` would not.
         assert_eq!(format_ymd_hms(-1), "1969-12-31 23:59:59");
+        assert_eq!(format_hms(1_786_233_600 + 3_661), "01:01:01");
     }
 
     #[test]
