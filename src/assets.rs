@@ -68,6 +68,11 @@ const ASSETS: &[Asset] = &[
         body: include_str!("../assets/resource.js"),
         content_type: "text/javascript; charset=utf-8",
     },
+    Asset {
+        name: "timeline.js",
+        body: include_str!("../assets/timeline.js"),
+        content_type: "text/javascript; charset=utf-8",
+    },
 ];
 
 /// Short content hash per asset, computed once. It rides in the query string so
@@ -181,6 +186,7 @@ mod tests {
             ".rv-steps",
             ".rv-chart",
             "pre.rv-diff",
+            ".timeline-shell",
         ] {
             assert!(css.contains(needed), "app.css lost `{needed}`");
         }

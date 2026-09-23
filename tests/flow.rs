@@ -1631,7 +1631,16 @@ async fn pages_link_external_assets_and_carry_no_inline_script() {
     );
 
     // Every referenced asset resolves, with a cacheable content-hashed URL.
-    for name in ["app.css", "app.js", "login.js", "register.js", "tokens.js"] {
+    for name in [
+        "app.css",
+        "app.js",
+        "login.js",
+        "register.js",
+        "tokens.js",
+        "admin.js",
+        "resource.js",
+        "timeline.js",
+    ] {
         let (status, body) = server.get_html(&format!("/assets/{name}"), None).await;
         assert_eq!(status, StatusCode::OK, "/assets/{name}");
         assert!(!body.is_empty(), "/assets/{name} is empty");
@@ -2522,23 +2531,26 @@ async fn deep_pages_carry_a_breadcrumb_trail_back_to_the_root() {
 }
 
 #[tokio::test]
-async fn timeline_topics_render_as_a_table_with_chronology_on_a_detail_page() {
+async fn timeline_routes_share_a_project_rail_and_chronology() {
     let server = Server::start();
     let session = server.register_first().await;
     let token = server
         .mint_token(&session, json!(["resource:write", "resource:read"]))
         .await;
 
-    async fn push_event(
-        server: &Server,
-        token: &str,
-        id: &str,
-        summary: &str,
-        occurred_at: &str,
+    struct PushEvent<'a> {
+        id: &'a str,
+        topic_id: &'a str,
+        topic_title: &'a str,
+        summary: &'a str,
+        occurred_at: &'a str,
         occurred_at_ms: i64,
-        relation: Option<(&str, &str)>,
-    ) -> Res {
-        let (relation_name, related_event) = relation
+        relation: Option<(&'a str, &'a str)>,
+    }
+
+    async fn push_event(server: &Server, token: &str, event: PushEvent<'_>) -> Res {
+        let (relation_name, related_event) = event
+            .relation
             .map(|(name, event)| (json!(name), json!(event)))
             .unwrap_or((Value::Null, Value::Null));
         server
@@ -2547,16 +2559,16 @@ async fn timeline_topics_render_as_a_table_with_chronology_on_a_detail_page() {
                 Some(token),
                 json!({
                     "kind": "timeline",
-                    "slug": id,
-                    "title": summary,
+                    "slug": event.id,
+                    "title": event.summary,
                     "meta": {
                         "schema": 1,
-                        "eventId": id,
-                        "topicId": "topic-publishing",
-                        "topicTitle": "Timeline publishing",
-                        "summary": summary,
-                        "occurredAt": occurred_at,
-                        "occurredAtMs": occurred_at_ms,
+                        "eventId": event.id,
+                        "topicId": event.topic_id,
+                        "topicTitle": event.topic_title,
+                        "summary": event.summary,
+                        "occurredAt": event.occurred_at,
+                        "occurredAtMs": event.occurred_at_ms,
                         "madeBy": "Current user",
                         "recordedAt": "2026-09-20T10:30:00+07:00",
                         "recordedAtMs": 1_789_875_000_000_i64,
@@ -2570,7 +2582,7 @@ async fn timeline_topics_render_as_a_table_with_chronology_on_a_detail_page() {
                     "contents": [{
                         "path": "event.md",
                         "content_base64": data_encoding::BASE64.encode(
-                            format!("# {summary}\n\nOriginal timeline evidence.\n").as_bytes()
+                            format!("# {}\n\nOriginal timeline evidence.\n", event.summary).as_bytes()
                         ),
                         "content_type": "text/markdown"
                     }]
@@ -2582,36 +2594,63 @@ async fn timeline_topics_render_as_a_table_with_chronology_on_a_detail_page() {
     let old = push_event(
         &server,
         &token,
-        "tl-old",
-        "Approve the publishing contract",
-        "2026-09-20T09:00:00+07:00",
-        1_789_869_600_000,
-        None,
+        PushEvent {
+            id: "tl-old",
+            topic_id: "topic-publishing",
+            topic_title: "Timeline publishing",
+            summary: "Approve the publishing contract",
+            occurred_at: "2026-09-20T09:00:00+07:00",
+            occurred_at_ms: 1_789_869_600_000,
+            relation: None,
+        },
     )
     .await;
     assert_eq!(old.status, StatusCode::CREATED, "{:?}", old.body);
     let new = push_event(
         &server,
         &token,
-        "tl-new",
-        "Implement the publishing contract",
-        "2026-09-20T10:00:00+07:00",
-        1_789_873_200_000,
-        Some(("supersedes", "tl-old")),
+        PushEvent {
+            id: "tl-new",
+            topic_id: "topic-publishing",
+            topic_title: "Timeline publishing",
+            summary: "Implement the publishing contract",
+            occurred_at: "2026-09-20T10:00:00+07:00",
+            occurred_at_ms: 1_789_873_200_000,
+            relation: Some(("supersedes", "tl-old")),
+        },
     )
     .await;
     assert_eq!(new.status, StatusCode::CREATED, "{:?}", new.body);
     let next_day = push_event(
         &server,
         &token,
-        "tl-next-day",
-        "Publish the timeline release",
-        "2026-09-21T10:00:00+07:00",
-        1_789_959_600_000,
-        None,
+        PushEvent {
+            id: "tl-next-day",
+            topic_id: "topic-publishing",
+            topic_title: "Timeline publishing",
+            summary: "Publish the timeline release",
+            occurred_at: "2026-09-21T10:00:00+07:00",
+            occurred_at_ms: 1_789_959_600_000,
+            relation: None,
+        },
     )
     .await;
     assert_eq!(next_day.status, StatusCode::CREATED, "{:?}", next_day.body);
+    let roadmap = push_event(
+        &server,
+        &token,
+        PushEvent {
+            id: "tl-roadmap",
+            topic_id: "topic-roadmap",
+            topic_title: "Delivery roadmap",
+            summary: "Approve the next release",
+            occurred_at: "2026-09-22T10:00:00+07:00",
+            occurred_at_ms: 1_790_046_000_000,
+            relation: None,
+        },
+    )
+    .await;
+    assert_eq!(roadmap.status, StatusCode::CREATED, "{:?}", roadmap.body);
 
     let malformed = server
         .post(
@@ -2638,19 +2677,45 @@ async fn timeline_topics_render_as_a_table_with_chronology_on_a_detail_page() {
 
     let (status, page) = server.get_html("/p/krypton/timeline", Some(&session)).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(page.contains("timeline-topic-table"), "{page}");
-    assert!(page.contains("Timeline publishing"), "{page}");
-    assert!(page.contains("<td>3</td>"), "{page}");
+    assert!(page.contains("class=\"timeline-shell\""), "{page}");
+    assert!(page.contains("/assets/timeline.js?v="), "{page}");
+    assert!(page.contains(">all events</span><b>4</b>"), "{page}");
     assert!(
-        !page.contains("Approve the publishing contract"),
-        "event detail belongs on the topic page: {page}"
+        page.contains(">Timeline publishing</span><b>3</b>"),
+        "{page}"
     );
+    assert!(page.contains(">Delivery roadmap</span><b>1</b>"), "{page}");
+    assert!(
+        page.find(">Delivery roadmap</span><b>1</b>").unwrap()
+            < page.find(">Timeline publishing</span><b>3</b>").unwrap(),
+        "topics must sort by latest event first: {page}"
+    );
+    assert!(
+        page.contains("Approve the publishing contract")
+            && page.contains("Implement the publishing contract")
+            && page.contains("Publish the timeline release")
+            && page.contains("Approve the next release"),
+        "the index must render the all-events chronology: {page}"
+    );
+    assert!(page.contains("class=\"timeline-pill\""), "{page}");
     assert!(page.contains("1 timeline resource omitted"), "{page}");
 
     let (detail_status, detail_page) = server
         .get_html("/p/krypton/timeline/topic-publishing", Some(&session))
         .await;
     assert_eq!(detail_status, StatusCode::OK);
+    assert!(
+        detail_page.contains("class=\"timeline-shell\""),
+        "{detail_page}"
+    );
+    assert!(
+        detail_page.contains("/assets/timeline.js?v="),
+        "{detail_page}"
+    );
+    assert!(
+        detail_page.contains("timeline-topic-link is-active\" href=\"/p/krypton/timeline/topic-publishing\" aria-current=\"page\""),
+        "topic route must select its rail item: {detail_page}"
+    );
     let old_at = detail_page.find("Approve the publishing contract").unwrap();
     let new_at = detail_page
         .find("Implement the publishing contract")
@@ -2691,8 +2756,9 @@ async fn timeline_topics_render_as_a_table_with_chronology_on_a_detail_page() {
         "{detail_page}"
     );
     assert!(
-        !detail_page.contains("pill k k--timeline"),
-        "topic detail must not repeat the topic as a tag on every event: {detail_page}"
+        !detail_page
+            .contains("class=\"timeline-pill\" href=\"/p/krypton/timeline/topic-publishing\""),
+        "topic detail must not repeat the topic as a pill on every event: {detail_page}"
     );
 
     let (_, descending) = server
@@ -2741,6 +2807,30 @@ async fn timeline_topics_render_as_a_table_with_chronology_on_a_detail_page() {
     assert!(!filtered.contains("Publish the timeline release"));
     assert!(filtered.contains("datetime=\"2026-09-20\""));
     assert!(!filtered.contains("datetime=\"2026-09-21\""));
+
+    let (_, empty_filtered) = server
+        .get_html(
+            "/p/krypton/timeline/topic-publishing?q=does-not-match",
+            Some(&session),
+        )
+        .await;
+    assert!(
+        empty_filtered.contains("timeline-topic-link is-active"),
+        "the active topic must remain in the rail when search empties the chronology: {empty_filtered}"
+    );
+    assert!(
+        empty_filtered.contains("no published timeline events match this view"),
+        "{empty_filtered}"
+    );
+
+    let (_, index_filtered) = server
+        .get_html("/p/krypton/timeline?q=roadmap", Some(&session))
+        .await;
+    assert!(index_filtered.contains("Approve the next release"));
+    assert!(!index_filtered.contains("Approve the publishing contract"));
+    assert!(index_filtered.contains(">all events</span><b>1</b>"));
+    assert!(index_filtered.contains(">Delivery roadmap</span><b>1</b>"));
+    assert!(!index_filtered.contains(">Timeline publishing</span><b>3</b>"));
 
     let (status, detail) = server
         .get_html("/r/krypton/timeline/tl-old", Some(&session))

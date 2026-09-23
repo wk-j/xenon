@@ -394,24 +394,57 @@ border:1px solid var(--border);border-radius:5px;color:var(--fg);font:12px var(-
 .timeline-filter input{width:min(360px,70vw)}
 .timeline-filter button{min-height:32px;background:var(--accent);border:1px solid var(--accent);
 border-radius:5px;color:var(--bg);font:600 11px var(--mono);padding:6px 12px;cursor:pointer}
-.timeline-topic-table td:nth-child(n+2),.timeline-topic-table th:nth-child(n+2){white-space:nowrap}
-.timeline-topic-table td:nth-child(2),.timeline-topic-table th:nth-child(2){text-align:right}
-.timeline-topic-head{margin:20px 0 14px}
+.timeline-shell{display:grid;grid-template-columns:minmax(200px,250px) minmax(0,1fr);
+border-top:1px solid var(--border);border-bottom:1px solid var(--border);min-height:280px}
+.timeline-rail{padding:12px 12px 18px 0;border-right:1px solid var(--border)}
+.timeline-rail__head{padding:0 10px 7px;font:10px/1.4 var(--mono);color:var(--muted);
+letter-spacing:.08em;text-transform:uppercase}
+.timeline-topic-link{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:10px;
+padding:7px 10px;border:1px solid transparent;border-radius:5px;color:var(--text);
+font:12px/1.35 var(--sans)}
+.timeline-topic-link:hover{background:var(--code-bg);color:var(--fg);text-decoration:none}
+.timeline-topic-link.is-active{background:color-mix(in oklab,var(--accent) 8%,transparent);
+border-color:color-mix(in oklab,var(--accent) 58%,var(--border));color:var(--accent)}
+.timeline-topic-link span{min-width:0;overflow-wrap:anywhere}
+.timeline-topic-link b{font:400 10px/1.6 var(--mono);color:var(--muted);
+font-variant-numeric:tabular-nums}
+.timeline-topic-link.is-active b{color:var(--accent)}
+.timeline-chronology{min-width:0;padding:0 0 8px 18px}
+.timeline-topic-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;
+flex-wrap:wrap;margin:13px 2px 10px}
 .timeline-topic-head h2{margin:0 0 4px;font:600 18px/1.4 var(--sans)}
 .timeline-topic-head p{margin:0}
 .timeline-days{border-top:1px solid var(--border)}
-.timeline-day{padding-top:16px}
-.timeline-day__date{margin:0 2px 8px;font:600 12px/1.4 var(--mono);color:var(--accent)}
+.timeline-day{padding-top:0}
+.timeline-day__date{position:sticky;top:0;z-index:2;margin:0;padding:8px 2px 7px;
+background:var(--bg);border-bottom:1px solid var(--border);
+font:600 11px/1.4 var(--mono);color:var(--accent)}
 .timeline-list{margin:0;padding:0;list-style:none}
-.timeline-event{display:grid;grid-template-columns:11.5em minmax(0,1fr);gap:18px;
-padding:12px 2px;border-bottom:1px solid var(--border)}
+.timeline-event{display:grid;grid-template-columns:54px minmax(0,1fr);gap:12px;
+margin:0;padding:10px 8px 10px 2px;border:1px solid transparent;
+border-bottom-color:var(--border);border-radius:4px;outline:0;
+content-visibility:auto;contain-intrinsic-size:auto 76px}
+.timeline-event.is-selected,.timeline-event:focus{background:color-mix(in oklab,var(--accent) 6%,transparent);
+border-color:color-mix(in oklab,var(--accent) 42%,var(--border))}
 .timeline-event__time{font:11px/1.6 var(--mono);color:var(--muted);white-space:nowrap}
-.timeline-event h4{margin:0 0 5px;font:600 14px/1.45 var(--sans)}
+.timeline-event h4{margin:0 0 5px;font:600 14px/1.45 var(--sans);overflow-wrap:anywhere}
 .timeline-event__meta{display:flex;align-items:baseline;gap:5px;flex-wrap:wrap}
+.timeline-pill{display:inline-block;padding:1px 6px;border:1px solid var(--border);border-radius:10px;
+font:10px/1.4 var(--mono);color:var(--muted)}
+a.timeline-pill:hover{border-color:var(--accent);color:var(--accent);text-decoration:none}
 .timeline-event__relation,.timeline-event__id{margin-top:5px;font:10px/1.5 var(--mono)}
 .timeline-event.is-superseded h4 a{color:var(--muted);text-decoration:line-through;
 text-decoration-color:var(--border)}
-@media (max-width:680px){.timeline-event{grid-template-columns:1fr;gap:3px}}
+.timeline-keys{margin:8px 0 0;text-align:right;font-size:10px}
+@media (max-width:720px){
+  .timeline-shell{grid-template-columns:1fr}
+  .timeline-rail{display:flex;gap:4px;overflow-x:auto;padding:10px 0;border-right:0;
+  border-bottom:1px solid var(--border)}
+  .timeline-rail__head{display:none}
+  .timeline-topic-link{flex:0 0 min(220px,72vw)}
+  .timeline-chronology{padding-left:0}
+}
+@media (max-width:480px){.timeline-event{grid-template-columns:1fr;gap:3px}}
 
 /* A numeric table is read down its columns, so every figure is right-aligned
    and only the cells that NAME a thing stay left. `tabular-nums` on table.data
