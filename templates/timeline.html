@@ -60,7 +60,10 @@
     <div class="timeline-days">
       {%- for day in days %}
       <section class="timeline-day">
-        <h3 class="timeline-day__date"><time datetime="{{ day.date }}">{{ day.date }}</time></h3>
+        <h3 class="timeline-day__date">
+          <time datetime="{{ day.date }}">{{ day.date }}</time>
+          <span class="timeline-day__count">{{ day.events.len() }} event{% if day.events.len() != 1 %}s{% endif %}</span>
+        </h3>
         <ol class="timeline-list">
           {%- for event in day.events %}
           <li class="timeline-event{% if event.superseded %} is-superseded{% endif %}" tabindex="-1" data-event-row data-href="{{ event.href }}">

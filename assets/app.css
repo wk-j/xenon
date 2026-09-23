@@ -417,20 +417,24 @@ flex-wrap:wrap;margin:13px 2px 10px}
 .timeline-superseded-toggle{display:inline-block;padding:1px 8px;border:1px solid var(--border);
 border-radius:10px;font:10px/1.6 var(--mono);color:var(--muted)}
 .timeline-superseded-toggle:hover{border-color:var(--accent);color:var(--accent);text-decoration:none}
-.timeline-days{border-top:1px solid var(--border)}
-.timeline-day{padding-top:0}
-.timeline-day__date{position:sticky;top:0;z-index:2;margin:0;padding:8px 2px 7px;
-background:var(--bg);border-bottom:1px solid var(--border);
+.timeline-days{display:grid;gap:16px;padding-top:12px;border-top:1px solid var(--border)}
+.timeline-day{min-width:0;background:var(--card);border:1px solid var(--border);border-radius:7px}
+.timeline-day__date{position:sticky;top:0;z-index:2;display:flex;justify-content:space-between;
+align-items:baseline;gap:12px;margin:0;padding:9px 14px;background:var(--code-bg);
+border-bottom:1px solid var(--border);border-radius:6px 6px 0 0;
 font:600 11px/1.4 var(--mono);color:var(--accent)}
+.timeline-day__count{font-weight:400;color:var(--muted);white-space:nowrap}
 .timeline-list{margin:0;padding:0;list-style:none}
-.timeline-event{display:grid;grid-template-columns:54px minmax(0,1fr);gap:12px;
-margin:0;padding:10px 8px 10px 2px;border:1px solid transparent;
-border-bottom-color:var(--border);border-radius:4px;outline:0;
+.timeline-event{display:grid;grid-template-columns:68px minmax(0,1fr);gap:14px;
+margin:0;padding:12px 14px;border-bottom:1px solid var(--border);outline:0;
 content-visibility:auto;contain-intrinsic-size:auto 76px}
+.timeline-event:last-child{border-bottom:0}
 .timeline-event.is-selected,.timeline-event:focus{background:color-mix(in oklab,var(--accent) 6%,transparent);
-border-color:color-mix(in oklab,var(--accent) 42%,var(--border))}
+box-shadow:inset 0 0 0 1px color-mix(in oklab,var(--accent) 42%,var(--border))}
 .timeline-event__time{font:11px/1.6 var(--mono);color:var(--muted);white-space:nowrap}
 .timeline-event h4{margin:0 0 5px;font:600 14px/1.45 var(--sans);overflow-wrap:anywhere}
+.timeline-event__link{color:var(--fg)}
+.timeline-event__link:hover{color:var(--accent)}
 .timeline-event__meta{display:flex;align-items:baseline;gap:5px;flex-wrap:wrap}
 .timeline-pill{display:inline-block;padding:1px 6px;border:1px solid var(--border);border-radius:10px;
 font:10px/1.4 var(--mono);color:var(--muted)}
