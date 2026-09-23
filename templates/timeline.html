@@ -24,6 +24,7 @@
       <option value="desc"{% if order == "desc" %} selected{% endif %}>newest first</option>
     </select>
   </label>
+  {%- if show_superseded %}<input type="hidden" name="superseded" value="show">{% endif %}
   <button type="submit">apply</button>
 </form>
 
@@ -47,7 +48,10 @@
   <section class="timeline-chronology" aria-labelledby="timeline-heading">
     <div class="timeline-topic-head">
       <h2 id="timeline-heading">{{ heading }}</h2>
-      <p class="meta">{{ event_count }} published event{% if event_count != 1 %}s{% endif %}</p>
+      <p class="meta">{{ event_count }} published event{% if event_count != 1 %}s{% endif %}
+        {%- if show_superseded %} · <a class="timeline-superseded-toggle" href="{{ superseded_toggle_href }}">hide superseded</a>
+        {%- else if hidden_superseded_count > 0 %} · <a class="timeline-superseded-toggle" href="{{ superseded_toggle_href }}">show {{ hidden_superseded_count }} superseded</a>
+        {%- endif %}</p>
     </div>
 
     {% if days.is_empty() %}

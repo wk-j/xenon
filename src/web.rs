@@ -423,6 +423,9 @@ struct TimelineTemplate {
     order: &'static str,
     view_href: String,
     reverse_order_href: String,
+    show_superseded: bool,
+    superseded_toggle_href: String,
+    hidden_superseded_count: usize,
     diagnostic_count: usize,
 }
 
@@ -496,6 +499,7 @@ struct TimelinePageInput {
     active_topic_id: Option<String>,
     search: String,
     order: &'static str,
+    show_superseded: bool,
 }
 
 #[derive(askama::Template)]
@@ -1520,12 +1524,14 @@ pub struct TimelineQuery {
     topic: Option<String>,
     q: Option<String>,
     order: Option<String>,
+    superseded: Option<String>,
 }
 
 #[derive(Deserialize)]
 pub struct TimelineTopicQuery {
     q: Option<String>,
     order: Option<String>,
+    superseded: Option<String>,
 }
 
 async fn project_timeline_page(
@@ -1541,15 +1547,21 @@ async fn project_timeline_page(
     }
     let search = query.q.unwrap_or_default().trim().to_string();
     let order = timeline_order(query.order.as_deref());
+    let show_superseded = timeline_show_superseded(query.superseded.as_deref());
     if let Some(topic) = query
         .topic
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        return Ok(
-            Redirect::to(&timeline_topic_url(&project, topic, &search, order)).into_response(),
-        );
+        return Ok(Redirect::to(&timeline_topic_url(
+            &project,
+            topic,
+            &search,
+            order,
+            show_superseded,
+        ))
+        .into_response());
     }
     let conn = state.db();
     let project_id = readable_project(&conn, actor.as_ref(), &project)?;
@@ -1566,6 +1578,7 @@ async fn project_timeline_page(
         active_topic_id: None,
         search,
         order,
+        show_superseded,
     })
 }
 
@@ -1588,6 +1601,7 @@ async fn project_timeline_topic_page(
 
     let search = query.q.unwrap_or_default().trim().to_string();
     let order = timeline_order(query.order.as_deref());
+    let show_superseded = timeline_show_superseded(query.superseded.as_deref());
     render_project_timeline(TimelinePageInput {
         nav,
         project,
@@ -1597,6 +1611,7 @@ async fn project_timeline_topic_page(
         active_topic_id: Some(topic_id),
         search,
         order,
+        show_superseded,
     })
 }
 
@@ -1610,6 +1625,7 @@ fn render_project_timeline(input: TimelinePageInput) -> AppResult<Response> {
         active_topic_id,
         search,
         order,
+        show_superseded,
     } = input;
     let search_folded = search.to_lowercase();
     let event_matches = |event: &TimelineEventView| {
@@ -1622,6 +1638,16 @@ fn render_project_timeline(input: TimelinePageInput) -> AppResult<Response> {
             || event.meta.summary.to_lowercase().contains(&search_folded)
             || event.meta.made_by.to_lowercase().contains(&search_folded)
     };
+    let superseded: std::collections::HashSet<&str> = all
+        .iter()
+        .filter(|event| event.meta.relation.as_deref() == Some("supersedes"))
+        .filter_map(|event| event.meta.related_event.as_deref())
+        .collect();
+    // Superseded rows stay in the record but leave the default view; counts
+    // follow what the reader can actually see.
+    let event_visible = |event: &TimelineEventView| {
+        show_superseded || !superseded.contains(event.meta.event_id.as_str())
+    };
 
     let mut topic_data = std::collections::HashMap::<String, TimelineTopicData>::new();
     for event in &all {
@@ -1633,12 +1659,14 @@ fn render_project_timeline(input: TimelinePageInput) -> AppResult<Response> {
                 latest_ms: event.meta.occurred_at_ms,
                 matches_search: false,
             });
-        entry.count += 1;
+        if event_visible(event) {
+            entry.count += 1;
+        }
         if event.meta.occurred_at_ms >= entry.latest_ms {
             entry.title = event.meta.topic_title.clone();
             entry.latest_ms = event.meta.occurred_at_ms;
         }
-        entry.matches_search |= event_matches(event);
+        entry.matches_search |= event_visible(event) && event_matches(event);
     }
 
     let active_topic_title = match active_topic_id.as_deref() {
@@ -1657,7 +1685,7 @@ fn render_project_timeline(input: TimelinePageInput) -> AppResult<Response> {
             topic.matches_search || active_topic_id.as_deref() == Some(id.as_str())
         })
         .map(|(id, topic)| TimelineTopic {
-            href: timeline_topic_url(&project, &id, &search, order),
+            href: timeline_topic_url(&project, &id, &search, order, show_superseded),
             title: topic.title,
             count: topic.count,
             active: active_topic_id.as_deref() == Some(id.as_str()),
@@ -1675,12 +1703,10 @@ fn render_project_timeline(input: TimelinePageInput) -> AppResult<Response> {
         .iter()
         .map(|event| event.meta.event_id.as_str())
         .collect();
-    let superseded: std::collections::HashSet<&str> = all
+    let all_count = all
         .iter()
-        .filter(|event| event.meta.relation.as_deref() == Some("supersedes"))
-        .filter_map(|event| event.meta.related_event.as_deref())
-        .collect();
-    let all_count = all.iter().filter(|event| event_matches(event)).count();
+        .filter(|event| event_visible(event) && event_matches(event))
+        .count();
     let mut filtered: Vec<&TimelineEventView> = all
         .iter()
         .filter(|event| {
@@ -1690,9 +1716,22 @@ fn render_project_timeline(input: TimelinePageInput) -> AppResult<Response> {
         })
         .filter(|event| event_matches(event))
         .collect();
+    let hidden_superseded_count = filtered
+        .iter()
+        .filter(|event| !event_visible(event))
+        .count();
+    filtered.retain(|event| event_visible(event));
     sort_timeline_events(&mut filtered, order);
     let event_count = filtered.len();
-    let events = timeline_rows(filtered, &project, &search, order, &event_ids, &superseded);
+    let events = timeline_rows(
+        filtered,
+        &project,
+        &search,
+        order,
+        show_superseded,
+        &event_ids,
+        &superseded,
+    );
     let days = group_timeline_rows(events);
 
     let all_active = active_topic_id.is_none();
@@ -1718,10 +1757,14 @@ fn render_project_timeline(input: TimelinePageInput) -> AppResult<Response> {
         })
         .unwrap_or_else(|| format!("/p/{}/timeline", urlencode(&project)));
     let reverse_order = if order == "asc" { "desc" } else { "asc" };
-    let reverse_order_href = active_topic_id
-        .as_deref()
-        .map(|topic_id| timeline_topic_url(&project, topic_id, &search, reverse_order))
-        .unwrap_or_else(|| timeline_index_url(&project, &search, reverse_order));
+    let view_url = |order: &str, show_superseded: bool| {
+        active_topic_id
+            .as_deref()
+            .map(|topic_id| timeline_topic_url(&project, topic_id, &search, order, show_superseded))
+            .unwrap_or_else(|| timeline_index_url(&project, &search, order, show_superseded))
+    };
+    let reverse_order_href = view_url(reverse_order, show_superseded);
+    let superseded_toggle_href = view_url(order, !show_superseded);
     let (title, css_url, app_js_url) = chrome(&page_title);
     Ok(render(&TimelineTemplate {
         title,
@@ -1738,7 +1781,7 @@ fn render_project_timeline(input: TimelinePageInput) -> AppResult<Response> {
         topics,
         all_active,
         all_count,
-        all_href: timeline_index_url(&project, &search, order),
+        all_href: timeline_index_url(&project, &search, order, show_superseded),
         heading,
         event_count,
         days,
@@ -1746,6 +1789,9 @@ fn render_project_timeline(input: TimelinePageInput) -> AppResult<Response> {
         order,
         view_href,
         reverse_order_href,
+        show_superseded,
+        superseded_toggle_href,
+        hidden_superseded_count,
         diagnostic_count,
     })?
     .into_response())
@@ -1817,6 +1863,7 @@ fn timeline_rows(
     project: &str,
     search: &str,
     order: &str,
+    show_superseded: bool,
     event_ids: &std::collections::HashSet<&str>,
     superseded: &std::collections::HashSet<&str>,
 ) -> Vec<TimelineRow> {
@@ -1849,7 +1896,13 @@ fn timeline_rows(
                     urlencode(&event.meta.event_id)
                 ),
                 topic_title: event.meta.topic_title.clone(),
-                topic_href: timeline_topic_url(project, &event.meta.topic_id, search, order),
+                topic_href: timeline_topic_url(
+                    project,
+                    &event.meta.topic_id,
+                    search,
+                    order,
+                    show_superseded,
+                ),
                 relation: event.meta.relation.clone(),
                 related_event,
                 related_href,
@@ -1919,23 +1972,27 @@ fn bounded_single_line(value: &str, max_chars: usize) -> bool {
     !value.trim().is_empty() && value.chars().count() <= max_chars && !value.contains(['\r', '\n'])
 }
 
-fn timeline_topic_url(project: &str, topic: &str, search: &str, order: &str) -> String {
-    let mut pairs = Vec::new();
-    if !search.is_empty() {
-        pairs.push(format!("q={}", urlencode(search)));
-    }
-    if order == "desc" {
-        pairs.push("order=desc".to_string());
-    }
-    let mut url = format!("/p/{}/timeline/{}", urlencode(project), urlencode(topic));
-    if !pairs.is_empty() {
-        url.push('?');
-        url.push_str(&pairs.join("&"));
-    }
-    url
+fn timeline_show_superseded(raw: Option<&str>) -> bool {
+    raw == Some("show")
 }
 
-fn timeline_index_url(project: &str, search: &str, order: &str) -> String {
+fn timeline_topic_url(
+    project: &str,
+    topic: &str,
+    search: &str,
+    order: &str,
+    show_superseded: bool,
+) -> String {
+    let base = format!("/p/{}/timeline/{}", urlencode(project), urlencode(topic));
+    timeline_view_url(base, search, order, show_superseded)
+}
+
+fn timeline_index_url(project: &str, search: &str, order: &str, show_superseded: bool) -> String {
+    let base = format!("/p/{}/timeline", urlencode(project));
+    timeline_view_url(base, search, order, show_superseded)
+}
+
+fn timeline_view_url(mut url: String, search: &str, order: &str, show_superseded: bool) -> String {
     let mut pairs = Vec::new();
     if !search.is_empty() {
         pairs.push(format!("q={}", urlencode(search)));
@@ -1943,7 +2000,9 @@ fn timeline_index_url(project: &str, search: &str, order: &str) -> String {
     if order == "desc" {
         pairs.push("order=desc".to_string());
     }
-    let mut url = format!("/p/{}/timeline", urlencode(project));
+    if show_superseded {
+        pairs.push("superseded=show".to_string());
+    }
     if !pairs.is_empty() {
         url.push('?');
         url.push_str(&pairs.join("&"));

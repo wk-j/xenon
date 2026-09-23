@@ -2679,29 +2679,63 @@ async fn timeline_routes_share_a_project_rail_and_chronology() {
     assert_eq!(status, StatusCode::OK);
     assert!(page.contains("class=\"timeline-shell\""), "{page}");
     assert!(page.contains("/assets/timeline.js?v="), "{page}");
-    assert!(page.contains(">all events</span><b>4</b>"), "{page}");
     assert!(
-        page.contains(">Timeline publishing</span><b>3</b>"),
+        page.contains(">all events</span><b>3</b>"),
+        "superseded events must leave the default counts: {page}"
+    );
+    assert!(
+        page.contains(">Timeline publishing</span><b>2</b>"),
         "{page}"
     );
     assert!(page.contains(">Delivery roadmap</span><b>1</b>"), "{page}");
     assert!(
         page.find(">Delivery roadmap</span><b>1</b>").unwrap()
-            < page.find(">Timeline publishing</span><b>3</b>").unwrap(),
+            < page.find(">Timeline publishing</span><b>2</b>").unwrap(),
         "topics must sort by latest event first: {page}"
     );
     assert!(
-        page.contains("Approve the publishing contract")
-            && page.contains("Implement the publishing contract")
+        page.contains("Implement the publishing contract")
             && page.contains("Publish the timeline release")
             && page.contains("Approve the next release"),
         "the index must render the all-events chronology: {page}"
+    );
+    assert!(
+        !page.contains("Approve the publishing contract"),
+        "superseded events must be hidden by default: {page}"
+    );
+    assert!(
+        page.contains("href=\"/p/krypton/timeline?superseded=show\">show 1 superseded</a>"),
+        "the hidden count must offer a toggle: {page}"
+    );
+
+    let (_, shown) = server
+        .get_html("/p/krypton/timeline?superseded=show", Some(&session))
+        .await;
+    assert!(shown.contains(">all events</span><b>4</b>"), "{shown}");
+    assert!(
+        shown.contains("Approve the publishing contract"),
+        "the toggle must bring superseded events back: {shown}"
+    );
+    assert!(
+        shown.contains("href=\"/p/krypton/timeline\">hide superseded</a>"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("href=\"/p/krypton/timeline/topic-publishing?superseded=show\""),
+        "topic links must keep the toggle: {shown}"
+    );
+    assert!(
+        shown.contains("<input type=\"hidden\" name=\"superseded\" value=\"show\">"),
+        "search must keep the toggle: {shown}"
     );
     assert!(page.contains("class=\"timeline-pill\""), "{page}");
     assert!(page.contains("1 timeline resource omitted"), "{page}");
 
     let (detail_status, detail_page) = server
-        .get_html("/p/krypton/timeline/topic-publishing", Some(&session))
+        .get_html(
+            "/p/krypton/timeline/topic-publishing?superseded=show",
+            Some(&session),
+        )
         .await;
     assert_eq!(detail_status, StatusCode::OK);
     assert!(
@@ -2713,7 +2747,7 @@ async fn timeline_routes_share_a_project_rail_and_chronology() {
         "{detail_page}"
     );
     assert!(
-        detail_page.contains("timeline-topic-link is-active\" href=\"/p/krypton/timeline/topic-publishing\" aria-current=\"page\""),
+        detail_page.contains("timeline-topic-link is-active\" href=\"/p/krypton/timeline/topic-publishing?superseded=show\" aria-current=\"page\""),
         "topic route must select its rail item: {detail_page}"
     );
     let old_at = detail_page.find("Approve the publishing contract").unwrap();
@@ -2763,7 +2797,7 @@ async fn timeline_routes_share_a_project_rail_and_chronology() {
 
     let (_, descending) = server
         .get_html(
-            "/p/krypton/timeline/topic-publishing?order=desc",
+            "/p/krypton/timeline/topic-publishing?order=desc&superseded=show",
             Some(&session),
         )
         .await;

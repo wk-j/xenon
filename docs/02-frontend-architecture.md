@@ -339,7 +339,9 @@ and topic routes search topic title, summary, and author and support ascending/d
 Topic links retain the current query and order; topic summaries sort by latest event descending.
 Rows sort by the event's occurrence time, then recording time, then id. A `supersedes` edge derives
 the older row's state at read time, and related ids become links only when that target is published
-in the same project. Malformed projections remain inspectable through Resources but are omitted
+in the same project. Superseded rows are hidden by default and left out of the rail and heading
+counts; the heading links `show N superseded`, and `superseded=show` brings them back greyed out and
+struck through. Topic links, order reversal, and search all carry that choice forward. Malformed projections remain inspectable through Resources but are omitted
 with a visible count.
 
 `assets/timeline.js` is progressive enhancement only: `/` focuses search, `[`/`]` move between
