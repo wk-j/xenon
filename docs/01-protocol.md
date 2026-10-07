@@ -65,10 +65,16 @@ instance. Every one requires a session — an API token, even one minted by the
 admin, is refused with `403 session_required`. A non-admin session is
 `403 admin_required`.
 
+Every admin list is paged: `?page=<n>&per_page=<1..100, default 25>` →
+`{ "items": [ … ], "page", "per_page", "total" }`. `page` in the response is
+the page actually returned — a request past the end (its last row was just
+removed) gets the last page, not an empty one. Rows below are the shape of
+one `items` entry.
+
 ### `GET /v1/admin/users` · `PATCH /v1/admin/users/{id}`
 
-List every account → `[{ id, email, display_name, is_admin, created_at,
-disabled_at, project_count }]`.
+List every account, oldest first → `{ id, email, display_name, is_admin,
+created_at, disabled_at, project_count }`.
 
 Patch takes `{ "disabled": true|false }`. Disable signs the account out of
 every session immediately; their tokens start failing with `401 account_disabled`
@@ -77,8 +83,8 @@ themselves (`403 cannot_disable_self`). Accounts are never deleted.
 
 ### `GET /v1/admin/projects` · `PATCH /v1/admin/projects/{project}`
 
-List every project, including private ones the admin does not own →
-`[{ id, slug, is_public, github_repo, created_at, resource_count, owner }]`.
+List every project, including private ones the admin does not own, newest
+first → `{ id, slug, is_public, github_repo, created_at, resource_count, owner }`.
 
 Patch takes `{ "is_public": true|false }`. That is how a project becomes
 readable by every account on this instance. There is no other write path
@@ -90,8 +96,8 @@ browse and `/v1` read routes. A token never inherits that.
 ### `GET /v1/admin/resources` · `DELETE /v1/admin/resources/{id}`
 
 List every resource on the instance, including those in private projects the
-admin does not own → `[{ id, kind, slug, title, created_at, updated_at,
-revisions, project }]`.
+admin does not own, most recently updated first → `{ id, kind, slug, title,
+created_at, updated_at, revisions, project }`.
 
 Delete removes the resource and every revision. Activity rows stay (their
 `resource_id` becomes NULL; `subject` and `detail` were frozen at write time).
@@ -103,9 +109,9 @@ writes; a token is `403 session_required`.
 
 ### `GET /v1/admin/invites`
 
-List issued codes as metadata only — created/expires/used, who minted, who
-claimed. The plaintext code is returned once, from `POST /v1/invites`, and is
-not stored.
+List issued codes as metadata only, newest first — created/expires/used, who
+minted, who claimed. The plaintext code is returned once, from
+`POST /v1/invites`, and is not stored.
 
 ## Tokens *(session only)*
 
@@ -267,7 +273,8 @@ project's activity · `/p/<project>/resources` its resources, filterable by kind
 `/p/<project>/usage` the LLM usage ledger ·
 `/r/<project>/<kind>/<slug>` the resource ·
 `/r/<project>/<kind>/<slug>/@<seq>` a pinned revision · `/register` · `/login` ·
-`POST /logout` · `/settings/tokens` · `/admin` (admin session).
+`POST /logout` · `/settings/tokens` · `/admin/{users,projects,resources,invites}`
+(admin session; one list per page, `?page=<n>`; bare `/admin` → `303` to `/admin/users`).
 
 The feed is the home page: opening the server answers *what was published* before
 *what exists*. A missing `?kind=` is `resource.publish`; `?kind=all` is every
@@ -283,7 +290,7 @@ kind. A leftover `/p/<project>?kind=<resource-kind>` (the old filter on the
 project URL) answers `303` to `/p/<project>/resources?kind=`.
 
 Every browse page except `/login` and `/register` requires a session: without
-one they answer `303` to `/login`. `/admin` is 404 to a signed-in non-admin, so
+one they answer `303` to `/login`. `/admin` and every page under it is 404 to a signed-in non-admin, so
 the URL does not advertise itself.
 
 `POST /logout` is the browse UI's sign-out form. It ends the same session as

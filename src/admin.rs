@@ -5,7 +5,7 @@
 // the unused invites.
 // Session only — a leaked integration token must not become a roster of users.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{delete, get, patch};
 use axum::{Json, Router};
@@ -97,6 +97,50 @@ struct UpdateAdminProjectRequest {
     is_public: Option<bool>,
 }
 
+/// Rows per admin page unless the caller asks otherwise, and the most it may ask for.
+const PAGE_DEFAULT: i64 = 25;
+const PAGE_MAX: i64 = 100;
+
+/// `?page=&per_page=` on every admin list. Numbered pages, not a keyset
+/// cursor: the admin tables are small, ordered by a unique key, and the
+/// page wants "page 2 of 5" — which needs the total anyway.
+#[derive(Deserialize)]
+struct PageQuery {
+    page: Option<i64>,
+    per_page: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct Page<T> {
+    items: Vec<T>,
+    /// The page actually returned — clamped into `1..=last`, so a request past
+    /// the end (its last row was just removed) gets the last page, not nothing.
+    page: i64,
+    per_page: i64,
+    total: i64,
+}
+
+/// Count `table`, resolve the requested window against that count, and load
+/// just that window. `table` is always a literal from this module.
+fn paged<T>(
+    conn: &Connection,
+    table: &str,
+    query: &PageQuery,
+    load: impl FnOnce(&Connection, i64, i64) -> AppResult<Vec<T>>,
+) -> AppResult<Page<T>> {
+    let total: i64 = conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))?;
+    let per_page = query.per_page.unwrap_or(PAGE_DEFAULT).clamp(1, PAGE_MAX);
+    let last = ((total + per_page - 1) / per_page).max(1);
+    let page = query.page.unwrap_or(1).clamp(1, last);
+    let items = load(conn, per_page, (page - 1) * per_page)?;
+    Ok(Page {
+        items,
+        page,
+        per_page,
+        total,
+    })
+}
+
 fn require_admin_session(conn: &Connection, headers: &HeaderMap) -> AppResult<Actor> {
     let actor = auth::require_actor(conn, headers)?;
     actor.require_session()?;
@@ -107,10 +151,11 @@ fn require_admin_session(conn: &Connection, headers: &HeaderMap) -> AppResult<Ac
 async fn list_users(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> AppResult<Json<Vec<AdminUserView>>> {
+    Query(query): Query<PageQuery>,
+) -> AppResult<Json<Page<AdminUserView>>> {
     let conn = state.db();
     require_admin_session(&conn, &headers)?;
-    Ok(Json(load_users(&conn)?))
+    Ok(Json(paged(&conn, "user", &query, load_users)?))
 }
 
 async fn update_user(
@@ -170,10 +215,11 @@ async fn update_user(
 async fn list_projects(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> AppResult<Json<Vec<AdminProjectView>>> {
+    Query(query): Query<PageQuery>,
+) -> AppResult<Json<Page<AdminProjectView>>> {
     let conn = state.db();
     require_admin_session(&conn, &headers)?;
-    Ok(Json(load_projects(&conn)?))
+    Ok(Json(paged(&conn, "project", &query, load_projects)?))
 }
 
 async fn update_project(
@@ -216,10 +262,11 @@ async fn update_project(
 async fn list_resources(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> AppResult<Json<Vec<AdminResourceView>>> {
+    Query(query): Query<PageQuery>,
+) -> AppResult<Json<Page<AdminResourceView>>> {
     let conn = state.db();
     require_admin_session(&conn, &headers)?;
-    Ok(Json(load_resources(&conn)?))
+    Ok(Json(paged(&conn, "resource", &query, load_resources)?))
 }
 
 /// Take a resource off the instance. Revisions and file rows go with it;
@@ -258,21 +305,23 @@ async fn delete_resource(
 async fn list_invites(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> AppResult<Json<Vec<AdminInviteView>>> {
+    Query(query): Query<PageQuery>,
+) -> AppResult<Json<Page<AdminInviteView>>> {
     let conn = state.db();
     require_admin_session(&conn, &headers)?;
-    Ok(Json(load_invites(&conn)?))
+    Ok(Json(paged(&conn, "invite", &query, load_invites)?))
 }
 
-fn load_users(conn: &Connection) -> AppResult<Vec<AdminUserView>> {
+fn load_users(conn: &Connection, limit: i64, offset: i64) -> AppResult<Vec<AdminUserView>> {
     let mut stmt = conn.prepare(
         "SELECT u.id, u.email, u.display_name, u.is_admin, u.created_at, u.disabled_at,
                 (SELECT count(*) FROM project p WHERE p.owner_id = u.id)
          FROM user u
-         ORDER BY u.created_at, u.email",
+         ORDER BY u.created_at, u.email
+         LIMIT ?1 OFFSET ?2",
     )?;
     let rows = stmt
-        .query_map([], |r| {
+        .query_map([limit, offset], |r| {
             Ok(AdminUserView {
                 id: r.get(0)?,
                 email: r.get(1)?,
@@ -309,17 +358,18 @@ fn load_user(conn: &Connection, id: &str) -> AppResult<Option<AdminUserView>> {
     .map_err(Into::into)
 }
 
-fn load_projects(conn: &Connection) -> AppResult<Vec<AdminProjectView>> {
+fn load_projects(conn: &Connection, limit: i64, offset: i64) -> AppResult<Vec<AdminProjectView>> {
     let mut stmt = conn.prepare(
         "SELECT p.id, p.slug, p.is_public, p.github_repo, p.created_at,
                 (SELECT count(*) FROM resource r WHERE r.project_id = p.id),
                 u.id, u.email, u.display_name
          FROM project p
          JOIN user u ON u.id = p.owner_id
-         ORDER BY p.created_at DESC, p.slug",
+         ORDER BY p.created_at DESC, p.slug
+         LIMIT ?1 OFFSET ?2",
     )?;
     let rows = stmt
-        .query_map([], |r| {
+        .query_map([limit, offset], |r| {
             Ok(AdminProjectView {
                 id: r.get(0)?,
                 slug: r.get(1)?,
@@ -367,7 +417,9 @@ fn load_project(conn: &Connection, slug: &str) -> AppResult<Option<AdminProjectV
     .map_err(Into::into)
 }
 
-fn load_resources(conn: &Connection) -> AppResult<Vec<AdminResourceView>> {
+fn load_resources(conn: &Connection, limit: i64, offset: i64) -> AppResult<Vec<AdminResourceView>> {
+    // `r.id` breaks ties: a slug repeats across projects, and pages need a
+    // total order or a row can sit on two of them (or neither).
     let mut stmt = conn.prepare(
         "SELECT r.id, r.kind, r.slug, r.title, r.created_at, r.updated_at,
                 (SELECT count(*) FROM revision v
@@ -375,10 +427,11 @@ fn load_resources(conn: &Connection) -> AppResult<Vec<AdminResourceView>> {
                 p.id, p.slug
          FROM resource r
          JOIN project p ON p.id = r.project_id
-         ORDER BY r.updated_at DESC, r.slug",
+         ORDER BY r.updated_at DESC, r.slug, r.id
+         LIMIT ?1 OFFSET ?2",
     )?;
     let rows = stmt
-        .query_map([], |r| {
+        .query_map([limit, offset], |r| {
             Ok(AdminResourceView {
                 id: r.get(0)?,
                 kind: r.get(1)?,
@@ -427,7 +480,7 @@ fn load_resource(conn: &Connection, id: &str) -> AppResult<Option<AdminResourceV
     .map_err(Into::into)
 }
 
-fn load_invites(conn: &Connection) -> AppResult<Vec<AdminInviteView>> {
+fn load_invites(conn: &Connection, limit: i64, offset: i64) -> AppResult<Vec<AdminInviteView>> {
     let mut stmt = conn.prepare(
         "SELECT i.created_at, i.expires_at, i.used_at,
                 c.id, c.email, c.display_name,
@@ -435,10 +488,11 @@ fn load_invites(conn: &Connection) -> AppResult<Vec<AdminInviteView>> {
          FROM invite i
          JOIN user c ON c.id = i.created_by
          LEFT JOIN user u ON u.id = i.used_by
-         ORDER BY i.created_at DESC",
+         ORDER BY i.created_at DESC, i.code_hash
+         LIMIT ?1 OFFSET ?2",
     )?;
     let rows = stmt
-        .query_map([], |r| {
+        .query_map([limit, offset], |r| {
             let used_id: Option<String> = r.get(6)?;
             let used_email: Option<String> = r.get(7)?;
             let used_name: Option<String> = r.get(8)?;

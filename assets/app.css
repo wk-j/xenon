@@ -364,7 +364,11 @@ table.data th{text-align:left;color:var(--muted);font-weight:400;letter-spacing:
 border-bottom:1px solid var(--border);padding:6px 8px}
 table.data td{border-bottom:1px solid var(--border);padding:6px 8px;color:var(--text)}
 table.data tr.is-disabled td{opacity:.55}
-.admin__h{margin:28px 0 8px;font:600 13px/1.4 var(--sans)}
+/* Admin list pager. `nav[hidden]` must win over the flex display. */
+.pager{display:flex;gap:16px;align-items:baseline;margin:14px 0 0;font:11px var(--mono);
+letter-spacing:.04em;color:var(--muted)}
+.pager[hidden]{display:none}
+.pager__off{opacity:.45}
 .res__admin{margin:20px 0 0;padding-top:16px;border-top:1px solid var(--border)}
 /* In-page confirm. Not a system dialog: it uses the same type and buttons as
    the rest of the chrome, and cancel is the focused control. */

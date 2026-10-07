@@ -36,7 +36,7 @@ registration needs an admin-issued invite unless `XENON_ALLOW_SIGNUP=1`.
 
 `/` is the activity feed, `/projects` the project list, `/p/<project>` that
 project's activity, and `/admin` — first account only — users, projects,
-resources, and the next invite.
+resources, and invites, one paged list per page.
 
 Mint a token at `/settings/tokens`, then point Krypton at it:
 

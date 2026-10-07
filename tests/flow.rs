@@ -2054,7 +2054,7 @@ async fn the_nav_reflects_who_is_reading() {
     assert!(!login.contains("sign out"), "{login}");
 
     // Every page carries the same chrome, so check one of each shape.
-    for path in ["/", "/login", "/settings/tokens", "/admin"] {
+    for path in ["/", "/login", "/settings/tokens", "/admin/users"] {
         let (status, html) = server.get_html(path, Some(&session)).await;
         assert_eq!(status, StatusCode::OK, "{path}");
         assert!(
@@ -4163,7 +4163,10 @@ async fn admin_routes_require_an_admin_session() {
 
         let admin = server.get(path, Some(&session_header(&session))).await;
         assert_eq!(admin.status, StatusCode::OK, "{path}: {:?}", admin.body);
-        assert!(admin.body.as_array().is_some(), "{path} returns a list");
+        assert!(
+            admin.body["items"].as_array().is_some(),
+            "{path} returns a page"
+        );
     }
 }
 
@@ -4178,7 +4181,7 @@ async fn an_admin_lists_every_user_and_cannot_disable_themselves() {
         .get("/v1/admin/users", Some(&session_header(&session)))
         .await;
     assert_eq!(users.status, StatusCode::OK);
-    let rows = users.body.as_array().unwrap();
+    let rows = users.body["items"].as_array().unwrap();
     assert_eq!(rows.len(), 2, "{:?}", users.body);
     assert!(
         rows.iter()
@@ -4281,7 +4284,7 @@ async fn an_admin_can_toggle_any_projects_visibility() {
         .get("/v1/admin/projects", Some(&session_header(&session)))
         .await;
     assert_eq!(listed.status, StatusCode::OK);
-    let rows = listed.body.as_array().unwrap();
+    let rows = listed.body["items"].as_array().unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["slug"], "friends.notes");
     assert_eq!(rows[0]["is_public"], false);
@@ -4343,27 +4346,64 @@ async fn the_admin_page_is_only_for_an_admin_session() {
     let session = server.register_first().await;
     let (friend, _) = register_invited(&server, &session, "friend@example.com").await;
 
-    let (anon, _) = server.get_html("/admin", None).await;
-    assert_eq!(anon, StatusCode::SEE_OTHER);
+    let (anon, to) = server.get_location("/admin").await;
+    assert_eq!((anon, to.as_str()), (StatusCode::SEE_OTHER, "/login"));
+    let (anon_section, to) = server.get_location("/admin/users").await;
+    assert_eq!(
+        (anon_section, to.as_str()),
+        (StatusCode::SEE_OTHER, "/login")
+    );
 
     let (member, _) = server.get_html("/admin", Some(&friend)).await;
     assert_eq!(member, StatusCode::NOT_FOUND);
+    let (member_section, _) = server.get_html("/admin/users", Some(&friend)).await;
+    assert_eq!(member_section, StatusCode::NOT_FOUND);
     let (_, member_home) = server.get_html("/", Some(&friend)).await;
     assert!(
         !member_home.contains("href=\"/admin\""),
         "a member must not see the admin link: {member_home}"
     );
 
-    let (status, html) = server.get_html("/admin", Some(&session)).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(html.contains("administration"), "{html}");
-    assert!(html.contains("admin.js"), "{html}");
+    let (landing, to) = server
+        .get_location_cookie("/admin", Some(&format!("xenon_session={session}")))
+        .await;
+    assert_eq!(
+        (landing, to.as_str()),
+        (StatusCode::SEE_OTHER, "/admin/users"),
+        "/admin lands on the first list"
+    );
+    let (unknown, _) = server.get_html("/admin/nope", Some(&session)).await;
+    assert_eq!(unknown, StatusCode::NOT_FOUND);
+
+    // One dataset per page: each section page carries its own table only.
+    for section in ["users", "projects", "resources", "invites"] {
+        let (status, html) = server
+            .get_html(&format!("/admin/{section}"), Some(&session))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{section}");
+        assert!(html.contains("administration"), "{html}");
+        assert!(html.contains("admin.js"), "{html}");
+        assert!(
+            html.contains(&format!("data-section=\"{section}\"")),
+            "{section}: {html}"
+        );
+        assert_eq!(
+            html.matches("<table").count(),
+            1,
+            "{section} shows one list: {html}"
+        );
+    }
+    let (_, users_html) = server.get_html("/admin/users", Some(&session)).await;
+    assert!(
+        !users_html.contains("id=\"mint\""),
+        "the invite control lives on the invites page only: {users_html}"
+    );
 
     let invites = server
         .get("/v1/admin/invites", Some(&session_header(&session)))
         .await;
     assert_eq!(invites.status, StatusCode::OK);
-    let rows = invites.body.as_array().unwrap();
+    let rows = invites.body["items"].as_array().unwrap();
     assert_eq!(
         rows.len(),
         1,
@@ -4372,10 +4412,55 @@ async fn the_admin_page_is_only_for_an_admin_session() {
     );
     assert!(rows[0]["used_at"].as_i64().is_some());
     assert_eq!(rows[0]["used_by"]["email"], "friend@example.com");
+}
+
+/// Admin lists come back a page at a time. Pages do not overlap, and a page
+/// past the end — its last row was just removed — is the last page, not an
+/// empty one the UI would show as "no accounts".
+#[tokio::test]
+async fn admin_lists_are_paged() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    register_invited(&server, &session, "a@example.com").await;
+    register_invited(&server, &session, "b@example.com").await;
+    let auth = session_header(&session);
+
+    let first = server
+        .get("/v1/admin/users?page=1&per_page=2", Some(&auth))
+        .await;
+    assert_eq!(first.status, StatusCode::OK, "{:?}", first.body);
+    assert_eq!(first.body["total"], 3);
+    assert_eq!(first.body["page"], 1);
+    assert_eq!(first.body["per_page"], 2);
+    let first_rows = first.body["items"].as_array().unwrap();
+    assert_eq!(first_rows.len(), 2);
+
+    let second = server
+        .get("/v1/admin/users?page=2&per_page=2", Some(&auth))
+        .await;
+    let second_rows = second.body["items"].as_array().unwrap();
+    assert_eq!(second_rows.len(), 1);
     assert!(
-        html.contains("id=\"resources\""),
-        "the admin page must list resources: {html}"
+        first_rows.iter().all(|u| u["id"] != second_rows[0]["id"]),
+        "pages overlap: {:?} / {:?}",
+        first.body,
+        second.body
     );
+
+    let past = server
+        .get("/v1/admin/users?page=9&per_page=2", Some(&auth))
+        .await;
+    assert_eq!(past.body["page"], 2, "{:?}", past.body);
+    assert_eq!(past.body["items"], second.body["items"]);
+
+    let capped = server
+        .get("/v1/admin/users?per_page=100000", Some(&auth))
+        .await;
+    assert_eq!(capped.body["per_page"], 100, "{:?}", capped.body);
+
+    let empty = server.get("/v1/admin/resources", Some(&auth)).await;
+    assert_eq!(empty.body["page"], 1, "an empty list is page 1 of 1");
+    assert_eq!(empty.body["total"], 0);
 }
 
 /// Removing a resource is an admin-session write. The row and its revisions
@@ -4407,7 +4492,7 @@ async fn an_admin_can_remove_a_resource() {
         .get("/v1/admin/resources", Some(&session_header(&session)))
         .await;
     assert_eq!(listed.status, StatusCode::OK, "{:?}", listed.body);
-    let rows = listed.body.as_array().unwrap();
+    let rows = listed.body["items"].as_array().unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["id"], resource_id);
     assert_eq!(rows[0]["title"], "notes");
@@ -4482,7 +4567,7 @@ async fn an_admin_can_remove_a_resource() {
     let empty = server
         .get("/v1/admin/resources", Some(&session_header(&session)))
         .await;
-    assert_eq!(empty.body.as_array().unwrap().len(), 0);
+    assert_eq!(empty.body["items"].as_array().unwrap().len(), 0);
 
     let feed = server
         .get("/v1/activity", Some(&session_header(&session)))

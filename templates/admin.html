@@ -6,42 +6,55 @@
 
 {% block content %}
 <h2>administration</h2>
-<p class="meta">every account on this instance, every project, every resource, and the invite codes that admit the next person. session only — a token cannot open this page.</p>
+<p class="meta">session only — a token cannot open these pages.</p>
+
+{#- One dataset per page. Each is its own list with its own pager; the tabs
+    are the only thing they share. -#}
+<div class="tabs">
+  <a href="/admin/users"{% if section == "users" %} class="on" aria-current="page"{% endif %}>users</a>
+  <a href="/admin/projects"{% if section == "projects" %} class="on" aria-current="page"{% endif %}>projects</a>
+  <a href="/admin/resources"{% if section == "resources" %} class="on" aria-current="page"{% endif %}>resources</a>
+  <a href="/admin/invites"{% if section == "invites" %} class="on" aria-current="page"{% endif %}>invites</a>
+</div>
+
 <p class="msg" id="m"></p>
 
-<h3 class="admin__h">users</h3>
+<div id="admin" data-section="{{ section }}">
+{%- if section == "users" %}
+<p class="meta">every account on this instance. disabling signs the account out everywhere.</p>
 <div class="scroll">
 <table class="data"><thead><tr>
 <th>name</th><th>email</th><th>role</th><th>projects</th><th>joined</th><th></th>
-</tr></thead><tbody id="users"></tbody></table>
+</tr></thead><tbody id="rows"></tbody></table>
 </div>
-<p class="empty" id="users-none" hidden>no accounts</p>
-
-<h3 class="admin__h">projects</h3>
+<p class="empty" id="none" hidden>no accounts</p>
+{%- else if section == "projects" %}
+<p class="meta">every project, including private ones you do not own.</p>
 <div class="scroll">
 <table class="data"><thead><tr>
 <th>project</th><th>owner</th><th>visibility</th><th>resources</th><th></th>
-</tr></thead><tbody id="projects"></tbody></table>
+</tr></thead><tbody id="rows"></tbody></table>
 </div>
-<p class="empty" id="projects-none" hidden>no projects yet</p>
-
-<h3 class="admin__h">resources</h3>
+<p class="empty" id="none" hidden>no projects yet</p>
+{%- else if section == "resources" %}
 <p class="meta">remove takes the resource and its revisions off the instance. activity stays; file bytes stay until garbage collection.</p>
 <div class="scroll">
 <table class="data"><thead><tr>
 <th>project</th><th>kind</th><th>title</th><th>updated</th><th></th>
-</tr></thead><tbody id="resources"></tbody></table>
+</tr></thead><tbody id="rows"></tbody></table>
 </div>
-<p class="empty" id="resources-none" hidden>no resources yet</p>
-
-<h3 class="admin__h">invites</h3>
+<p class="empty" id="none" hidden>no resources yet</p>
+{%- else %}
 <p class="meta">single use, seven days. the code is shown once, here, and never stored in the clear.</p>
 <p><button type="button" id="mint">create invite</button></p>
 <div id="secret"></div>
 <div class="scroll">
 <table class="data"><thead><tr>
 <th>status</th><th>created</th><th>expires</th><th>created by</th><th>used by</th>
-</tr></thead><tbody id="invites"></tbody></table>
+</tr></thead><tbody id="rows"></tbody></table>
 </div>
-<p class="empty" id="invites-none" hidden>no invites issued yet</p>
+<p class="empty" id="none" hidden>no invites issued yet</p>
+{%- endif %}
+<nav class="pager" id="pager" hidden></nav>
+</div>
 {% endblock %}

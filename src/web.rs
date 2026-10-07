@@ -92,7 +92,12 @@ struct AdminTemplate {
     page_js_url: String,
     crumbs: Vec<Crumb>,
     nav: Nav,
+    /// Which admin list this page shows — one of `ADMIN_SECTIONS`.
+    section: &'static str,
 }
+
+/// The admin lists, one page each. The first is where `/admin` lands.
+const ADMIN_SECTIONS: [&str; 4] = ["users", "projects", "resources", "invites"];
 
 struct Crumb {
     label: String,
@@ -149,7 +154,8 @@ impl Nav {
     }
 
     fn on_admin(&self) -> bool {
-        self.path() == "/admin"
+        let p = self.path();
+        p == "/admin" || p.starts_with("/admin/")
     }
 
     fn on_login(&self) -> bool {
@@ -978,6 +984,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/register", get(register_page))
         .route("/settings/tokens", get(tokens_page))
         .route("/admin", get(admin_page))
+        .route("/admin/{section}", get(admin_section_page))
         .route("/p/{project}", get(project_page))
         .route("/p/{project}/resources", get(project_resources_page))
         .route("/p/{project}/timeline", get(project_timeline_page))
@@ -3203,22 +3210,35 @@ async fn tokens_page(
     .into_response())
 }
 
+/// `/admin` is not a page of its own: it lands on the first list. The gate
+/// runs first so a member still gets the same 404 as on every admin page.
 async fn admin_page(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     uri: axum::http::Uri,
 ) -> AppResult<Response> {
+    let (actor, _) = viewer(&state, &headers, &uri);
+    if let Some(denied) = admin_gate(actor)? {
+        return Ok(denied);
+    }
+    Ok(Redirect::to(&format!("/admin/{}", ADMIN_SECTIONS[0])).into_response())
+}
+
+async fn admin_section_page(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Path(section): Path<String>,
+) -> AppResult<Response> {
     let (actor, nav) = viewer(&state, &headers, &uri);
-    if !actor.as_ref().is_some_and(|a| a.is_session()) {
-        return Ok(redirect_to_login());
+    if let Some(denied) = admin_gate(actor)? {
+        return Ok(denied);
     }
-    // Not-found rather than forbidden: a signed-in non-admin should not learn
-    // that this surface exists from the status code. The nav already hid the
-    // link; typing the URL is the remaining path.
-    if !actor.is_some_and(|a| a.is_admin) {
-        return Err(AppError::not_found("no such page"));
-    }
-    let (title, css_url, app_js_url) = chrome("admin");
+    let section = ADMIN_SECTIONS
+        .into_iter()
+        .find(|s| *s == section)
+        .ok_or_else(|| AppError::not_found("no such page"))?;
+    let (title, css_url, app_js_url) = chrome(&format!("admin · {section}"));
     Ok(render(&AdminTemplate {
         title,
         css_url,
@@ -3226,8 +3246,23 @@ async fn admin_page(
         page_js_url: assets::url("admin.js"),
         crumbs: Vec::new(),
         nav,
+        section,
     })?
     .into_response())
+}
+
+/// Signed out → the login page. Signed in but not the admin → not-found
+/// rather than forbidden: a non-admin should not learn that this surface
+/// exists from the status code. The nav already hid the link; typing the URL
+/// is the remaining path.
+fn admin_gate(actor: Option<Actor>) -> AppResult<Option<Response>> {
+    if !actor.as_ref().is_some_and(|a| a.is_session()) {
+        return Ok(Some(redirect_to_login()));
+    }
+    if !actor.is_some_and(|a| a.is_admin) {
+        return Err(AppError::not_found("no such page"));
+    }
+    Ok(None)
 }
 
 /// Theme for the browser. A POST, like sign-out: a GET would be cacheable and
@@ -3485,6 +3520,8 @@ mod tests {
 
         assert!(nav_at("/settings/tokens").on_tokens());
         assert!(nav_at("/admin").on_admin());
+        assert!(nav_at("/admin/resources").on_admin());
+        assert!(!nav_at("/administrivia").on_admin());
         assert!(nav_at("/login").on_login());
         assert!(nav_at("/register").on_login());
         assert!(!nav_at("/projects").on_login());
