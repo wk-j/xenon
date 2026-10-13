@@ -4629,3 +4629,97 @@ async fn removing_an_unknown_resource_is_not_found() {
     assert_eq!(missing.status, StatusCode::NOT_FOUND);
     assert_eq!(missing.s("error"), "not_found");
 }
+
+async fn push_handoff(server: &Server, token: &str, id: &str, summary: &str) -> Res {
+    server
+        .post(
+            "/v1/projects/krypton/resources:inline",
+            Some(token),
+            json!({
+                "kind": "handoff",
+                "slug": id,
+                "title": summary,
+                "meta": {
+                    "id": id,
+                    "author": "Codex-1",
+                    "host": "wk-mbp",
+                    "summary": summary,
+                    "createdAt": "2026-10-13T09:00:00+07:00",
+                    "updatedAt": "2026-10-13T09:00:00+07:00"
+                },
+                "contents": [{
+                    "path": "handoff.md",
+                    "content_base64": data_encoding::BASE64
+                        .encode(format!("# {summary}\n").as_bytes()),
+                    "content_type": "text/markdown"
+                }]
+            }),
+        )
+        .await
+}
+
+fn listed_slugs(listing: &Res) -> Vec<String> {
+    listing
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["slug"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn handoff_kind_is_accepted_and_filterable() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(&session, json!(["resource:write", "resource:read"]))
+        .await;
+
+    let pushed = push_handoff(&server, &token, "ho-abc123", "Resume the parser fix").await;
+    assert_eq!(pushed.status, StatusCode::CREATED, "{:?}", pushed.body);
+
+    let listing = server
+        .get("/v1/projects/krypton/resources?kind=handoff", Some(&token))
+        .await;
+    assert_eq!(listing.status, StatusCode::OK, "{:?}", listing.body);
+    assert_eq!(listed_slugs(&listing), vec!["ho-abc123".to_string()]);
+    assert_eq!(listing.body[0]["kind"], "handoff");
+}
+
+#[tokio::test]
+async fn unchanged_repush_does_not_move_updated_at() {
+    let server = Server::start();
+    let session = server.register_first().await;
+    let token = server
+        .mint_token(&session, json!(["resource:write", "resource:read"]))
+        .await;
+
+    // `now()` has second resolution, so the pushes are spaced a second apart
+    // to make the ordering observable.
+    let a = push_handoff(&server, &token, "ho-a", "first").await;
+    assert_eq!(a.status, StatusCode::CREATED, "{:?}", a.body);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let b = push_handoff(&server, &token, "ho-b", "second").await;
+    assert_eq!(b.status, StatusCode::CREATED, "{:?}", b.body);
+
+    let before = server
+        .get("/v1/projects/krypton/resources?kind=handoff", Some(&token))
+        .await;
+    assert_eq!(listed_slugs(&before), vec!["ho-b", "ho-a"]);
+    let a_updated = before.body[1]["updated_at"].as_i64().unwrap();
+
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let again = push_handoff(&server, &token, "ho-a", "first").await;
+    assert!(again.status.is_success(), "{:?}", again.body);
+
+    let after = server
+        .get("/v1/projects/krypton/resources?kind=handoff", Some(&token))
+        .await;
+    assert_eq!(
+        listed_slugs(&after),
+        vec!["ho-b", "ho-a"],
+        "a no-op push must not reorder the listing"
+    );
+    assert_eq!(after.body[1]["updated_at"].as_i64().unwrap(), a_updated);
+}

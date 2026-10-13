@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-pub const KINDS: [&str; 7] = [
+pub const KINDS: [&str; 8] = [
     "artifact",
     "review",
     "analysis",
@@ -16,6 +16,7 @@ pub const KINDS: [&str; 7] = [
     "attention",
     "daily",
     "timeline",
+    "handoff",
 ];
 const MAX_INLINE_BYTES: usize = 1024 * 1024;
 

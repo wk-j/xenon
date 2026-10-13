@@ -156,10 +156,16 @@ owned by the token's user.
 }
 ```
 
-`kind` ∈ `artifact | review | analysis | doc | attention | daily | timeline`. `slug` may
+`kind` ∈ `artifact | review | analysis | doc | attention | daily | timeline | handoff`. `slug` may
 contain slashes (an analysis bundle is `owner/repo/number`); a `daily` slug is
 the bare local date `YYYY-MM-DD`; a `timeline` slug is its confirmed event id and
-normally carries one `event.md`. `files` may be empty.
+normally carries one `event.md`. A `handoff` slug is the handoff id (`ho-…`),
+its meta is `{ id, author, host, summary, createdAt, updatedAt }`, and it carries
+one `handoff.md`. `files` may be empty.
+
+A resource's `updated_at` reflects its last sealed revision: opening a manifest
+refreshes `title` only, so unchanged or abandoned pushes never reorder
+`?kind=` listings.
 
 → `202 { resource_id, revision_id, missing: [...], unchanged: false, url }` —
 `missing` lists only the digests to upload.

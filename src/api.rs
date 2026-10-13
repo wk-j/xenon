@@ -31,7 +31,7 @@ use crate::util::{
 
 /// Resource kinds Krypton can publish. Anything else is rejected at the edge so
 /// a typo cannot create a phantom kind that no browse surface renders.
-pub const RESOURCE_KINDS: [&str; 7] = [
+pub const RESOURCE_KINDS: [&str; 8] = [
     "artifact",
     "review",
     "analysis",
@@ -41,6 +41,8 @@ pub const RESOURCE_KINDS: [&str; 7] = [
     // an optional `brief.md` a lane narrated from it.
     "daily",
     "timeline",
+    // Krypton spec 293: one handoff document per work thread; slug = handoff id
+    "handoff",
 ];
 
 const MAX_FILES_PER_RESOURCE: usize = 512;
@@ -420,9 +422,11 @@ fn open_revision(
 
     let (resource_id, head) = match existing {
         Some((id, head)) => {
+            // `updated_at` moves only when a revision seals (see the seal path),
+            // so no-op and failed pushes never reorder `?kind=` listings.
             conn.execute(
-                "UPDATE resource SET title = ?1, updated_at = ?2 WHERE id = ?3",
-                params![manifest.title, now(), id],
+                "UPDATE resource SET title = ?1 WHERE id = ?2",
+                params![manifest.title, id],
             )?;
             (id, head)
         }

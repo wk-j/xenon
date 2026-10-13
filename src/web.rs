@@ -2023,11 +2023,12 @@ fn timeline_view_url(mut url: String, search: &str, order: &str, show_superseded
 /// `daily` carries `brief.md` (a lane's narration) beside `note.md` (derived
 /// from records), and the record has to be what a reader lands on. `review`
 /// bundles carry an `assets/` directory that sorts ahead of both markdown files.
-const ENTRY_FILES: [(&str, &[&str]); 4] = [
+const ENTRY_FILES: [(&str, &[&str]); 5] = [
     ("daily", &["note.md"]),
     ("review", &["review.md", "response.md"]),
     ("analysis", &["root-cause.md", "fix-plan.md"]),
     ("timeline", &["event.md"]),
+    ("handoff", &["handoff.md"]),
 ];
 
 /// Which file the resource page shows when the reader has not named one.
